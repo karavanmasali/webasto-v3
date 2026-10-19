@@ -4,18 +4,18 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b1223" />
-  <meta name="description" content="Karavan Webasto V3 — HeatGenie uyumlu ısıtıcı için kontrol paneli ve Bluetooth tanılama." />
-  <title>Karavan Webasto V3</title>
+  <meta name="description" content="Karavan Webasto V3.1 — HeatGenie uyumlu ısıtıcı için kontrol paneli ve Bluetooth tanılama." />
+  <title>Karavan Webasto V3.1</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="style.css?v=3.0.0" />
-  <script type="module" src="app.js?v=3.0.0"></script>
+  <link rel="stylesheet" href="style.css?v=3.1.0" />
+  <script type="module" src="app.js?v=3.1.0"></script>
 </head>
 <body>
   <main class="shell">
     <header class="top">
       <div class="brand-mark" aria-hidden="true">♨</div>
-      <div class="top-title"><h1>Karavan Webasto <span>V3</span></h1><p>Quatro · HeatGenie / RE5011</p></div>
+      <div class="top-title"><h1>Karavan Webasto <span>V3.1</span></h1><p>Quatro · HeatGenie / RE5011</p></div>
       <span id="connectionBadge" class="pill offline">Bağlı değil</span>
     </header>
 
@@ -78,9 +78,9 @@
       <div class="actions"><button class="btn amber" id="leaveBtn" disabled>Karavandan ayrıldım</button><button class="btn secondary" id="readBtn" disabled>Veri oku</button><button class="btn ghost" id="exportBtn">Tanı kayıtlarını indir</button></div>
       <p class="help">Karavandan ayrıldım: otomatiği kapatır ve gerçek kontrol destekleniyorsa normal STOP komutu gönderir. Isıtıcının elektrik beslemesini kesmez.</p>
       <details><summary>Bluetooth tanılama kayıtları</summary><pre id="logOutput" class="logs">Henüz kayıt yok.</pre></details>
-      <details><summary>Teknik durum / V3 sınırları</summary><p class="help">Bluetooth GATT bağlantısı, servis keşfi ve ham bildirim izleme çalışır. HeatGenie’nin cihaza özel komut paketleri ve durum çözümleyicisi henüz doğrulanmadığı için gerçek cihaza START, STOP veya hedef sıcaklığı paketi gönderilmez; termostat gerçek cihazda etkinleştirilmez. Demo gerçek ısıtıcıyı kumanda etmez. Amaç doğrulanmamış bir paketin ısıtıcıya gönderilmesini önlemektir.</p></details>
+      <details><summary>Teknik durum / V3 sınırları</summary><p class="help">Bluetooth GATT bağlantısı, servis keşfi ve gerçek 3A00 durum raporları için CRC16 doğrulamalı okuma bulunur. HeatGenie’nin cihaza özel START/STOP/sıcaklık yazma komutları henüz doğrulanmadığı için gerçek cihaza START, STOP veya hedef sıcaklığı paketi gönderilmez; termostat gerçek cihazda etkinleştirilmez. Demo gerçek ısıtıcıyı kumanda etmez. Amaç doğrulanmamış bir paketin ısıtıcıya gönderilmesini önlemektir.</p></details>
     </section>
-    <footer>Karavan Webasto V3 · Yerel kayıt · İnternet gerektirmeyen termostat mantığı (sayfa açıkken) · CO alarmının yerine geçmez.</footer>
+    <footer>Karavan Webasto V3.1 · Yerel kayıt · İnternet gerektirmeyen termostat mantığı (sayfa açıkken) · CO alarmının yerine geçmez.</footer>
   </main>
 </body>
 </html>

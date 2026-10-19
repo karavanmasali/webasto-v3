@@ -7,6 +7,7 @@ try { cfg=safeConfig(JSON.parse(localStorage.getItem('webasto-v3')||'null')); } 
 let mode='none'; // none | demo | ble
 let heater='unknown';
 let demoRoom=19.2;
+let actualRoom=null, actualFan=null, actualPump=null, actualGlow=null, actualState=null, actualError=null;
 let caseTemp=null;
 let voltage=null;
 let targetOnDevice=null;
@@ -14,7 +15,21 @@ let stopSince=null, lastStoppedAt=null, sent=false, busy=false, error=false;
 let lastUpdate=0;
 let logs=[];
 const log=(msg)=>{logs.push(`[${new Date().toLocaleTimeString('tr-TR')}] ${msg}`);logs=logs.slice(-300);$('logOutput').textContent=logs.join('\n');};
-const ble = new HeatGenieBLE(log,()=>{mode='none';heater='unknown';cfg.auto=false;stopSince=null;lastUpdate=0;save();render();});
+const ble = new HeatGenieBLE(log,
+  ()=>{mode='none';heater='unknown';cfg.auto=false;stopSince=null;lastUpdate=0;save();render();},
+  status=>{
+    actualRoom=status.roomTemp;
+    caseTemp=status.caseTemp;
+    voltage=status.voltage;
+    targetOnDevice=status.target;
+    actualFan=status.fan;
+    actualPump=status.pump;
+    actualGlow=status.glow;
+    actualState=status.stateCode;
+    actualError=status.errorFlags;
+    lastUpdate=Date.now();
+    render();
+  });
 const save=()=>{localStorage.setItem('webasto-v3',JSON.stringify(cfg));};
 const fresh=()=>mode==='demo' || (mode==='ble' && Date.now()-lastUpdate<20000);
 const ready=()=>mode==='demo' || (mode==='ble' && ble.canControl && fresh());
@@ -25,15 +40,15 @@ function render(){
  $('stopDelay').value=cfg.stopDelay;$('restartDelay').value=cfg.restartDelay;
  $('connectionBadge').textContent=mode==='demo'?'DEMO':mode==='ble'?'Bluetooth bağlı':'Bağlı değil';
  $('connectionBadge').className='pill '+(mode==='demo'?'test':mode==='ble'?'on':'offline');
- $('heaterStatus').textContent=nameOf[heater];
- $('heaterSubstatus').textContent=mode==='demo'?'Simüle edilen ısıtıcı':mode==='ble'?'Ham BLE veri okunuyor; kontrol protokolü doğrulanmadı':'Cihaz verisi bekleniyor';
+ $('heaterStatus').textContent=mode==='ble' && actualState !== null ? (actualError?'Hata bayrağı var':(actualFan||actualPump?'Aktivite algılandı':'Durum kodu alındı')):nameOf[heater];
+ $('heaterSubstatus').textContent=mode==='demo'?'Simüle edilen ısıtıcı':mode==='ble'?(actualState===null?'Doğrulanmış 3A00 paketi bekleniyor':`Durum: 0x${actualState.toString(16).padStart(2,'0').toUpperCase()} · CRC doğrulandı · Komut kontrolü kapalı`):'Cihaz verisi bekleniyor';
  $('deviceName').textContent=mode==='demo'?'Simülasyon':mode==='ble'?(ble.device?.name||'Bağlı cihaz'):'Cihaz seçilmedi';
- $('roomTemp').textContent=mode==='demo'?demoRoom.toFixed(1):'—';
- $('physicalTarget').textContent=mode==='demo'?targetOnDevice??'—':'—';
- $('caseTemp').textContent=caseTemp===null?'—':caseTemp.toFixed(0);
+ $('roomTemp').textContent=mode==='demo'?demoRoom.toFixed(1):mode==='ble' && actualRoom!==null?actualRoom.toFixed(1):'—';
+ $('physicalTarget').textContent=(mode==='demo'||mode==='ble')?(targetOnDevice??'—'):'—';
+ $('caseTemp').textContent=caseTemp===null?'—':caseTemp.toFixed(1);
  $('voltage').textContent=voltage===null?'—':voltage.toFixed(1);
- $('fan').textContent=mode==='demo'?(heater==='on'?'3':'Kapalı'):'—';
- $('pump').textContent=mode==='demo'?(heater==='on'?'Açık':'Kapalı'):'—';
+ $('fan').textContent=mode==='demo'?(heater==='on'?'3':'Kapalı'):mode==='ble' && actualFan!==null?(actualFan?'Açık':'Kapalı'):'—';
+ $('pump').textContent=mode==='demo'?(heater==='on'?'Açık':'Kapalı'):mode==='ble' && actualPump!==null?`${actualPump?'Açık':'Kapalı'} / ${actualGlow?'Açık':'Kapalı'}`:'—';
  $('connectBtn').disabled=mode==='ble'||busy;
  $('disconnectBtn').disabled=mode!=='ble';
  $('demoBtn').textContent=mode==='demo'?'Demoyu kapat':'Demo aç';
@@ -43,8 +58,8 @@ function render(){
  $('targetPlus').disabled=!ready() || busy || cfg.auto;
  $('leaveBtn').disabled=!ready() || busy;
  $('readBtn').disabled=mode!=='ble';
- $('modeNotice').innerHTML=mode==='demo'?'<strong>DEMO MODU.</strong> Ekrandaki komutlar yalnızca sanal ısıtıcıyı yönetir; gerçek cihaza hiçbir veri gönderilmez.':mode==='ble'?'<strong>Bluetooth bağlı; yalnızca tanılama.</strong> Doğrulanmış HeatGenie komut paketleri olmadan gerçek kontrol ve otomatik mod engellenir.':'<strong>Gerçek cihaza bağlı değil.</strong> Demo modu veya Bluetooth tanılama kullanabilirsin.';
- $('freshness').textContent=mode==='demo'?'Demo verisi':mode==='ble'?'Ham veri; çözümlenmedi':'Veri yok';
+ $('modeNotice').innerHTML=mode==='demo'?'<strong>DEMO MODU.</strong> Ekrandaki komutlar yalnızca sanal ısıtıcıyı yönetir; gerçek cihaza hiçbir veri gönderilmez.':mode==='ble'?'<strong>Bluetooth bağlı; gerçek telemetri okunuyor.</strong> CRC doğrulanmış paketler görüntülenir. START/STOP/hedef gönderimi ile otomatik mod güvenlik nedeniyle kapalıdır.':'<strong>Gerçek cihaza bağlı değil.</strong> Demo modu veya Bluetooth tanılama kullanabilirsin.';
+ $('freshness').textContent=mode==='demo'?'Demo verisi':mode==='ble'?(lastUpdate?('Gerçek veri · '+(fresh()?'güncel':'eski')):'Paket bekleniyor'):'Veri yok';
  if(mode==='ble') {$('autoToggle').disabled=true;$('autoReason').textContent='Gerçek ısıtıcı için protokol doğrulaması yapılmadı; otomatik kontrol kapalı.';}
  else {$('autoToggle').disabled=(mode!=='demo'); if(!cfg.auto) $('autoReason').textContent='Otomatik mod kapalı.';}
 }
@@ -93,7 +108,7 @@ $('demoBtn').onclick=()=>{
 $('connectBtn').onclick=async()=>{
  if(mode==='demo'){$('demoBtn').click();}
  cfg.auto=false;save();busy=true;render();
- try {const name=await ble.connect();mode='ble';heater='unknown';lastUpdate=0;log('Bağlantı tamamlandı: '+name+'. Sadece GATT tanılama açık.');}
+ try {const name=await ble.connect();mode='ble';heater='unknown';log('Bağlantı tamamlandı: '+name+'. Gerçek 3A00 telemetri okuma açık; komut kontrolü kapalı.');}
  catch(e){mode='none';log('Bağlantı hatası: '+e.message);alert('Bluetooth bağlantısı kurulamadı: '+e.message);}
  busy=false;render();
 };
@@ -119,5 +134,5 @@ setInterval(()=>{
 window.addEventListener('pagehide',()=>{ // Kapandığında otomatik komut garantisi yok; güç kesme uygulanmaz.
  cfg.auto=false;save();
 });
-log('V3 açıldı. Gerçek protokol doğrulanmadığı için hiçbir BLE kontrol komutu gönderilmez.');
+log('V3.1 açıldı. 3A00 gerçek durum okumaları CRC16 ile doğrulanır; gerçek BLE komutları devre dışıdır.');
 render();

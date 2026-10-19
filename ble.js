@@ -1,6 +1,6 @@
 /** HeatGenie RE5011 BLE — supervised/manual diagnostics ONLY. */
-import {HEATGENIE_SERVICE, HEATGENIE_READ_CHAR, HEATGENIE_WRITE_CHAR, parseHeatGenieStatus} from './protocol.mjs';
-import {guardedBuild,hexBytes} from './command-profile.mjs';
+import {HEATGENIE_SERVICE, HEATGENIE_READ_CHAR, HEATGENIE_WRITE_CHAR, parseHeatGenieStatus} from './protocol.mjs?v=3.3.0';
+import {guardedBuild,hexBytes} from './command-profile.mjs?v=3.3.0';
 const bufferHex = data => hexBytes(new Uint8Array(data.buffer ?? data, data.byteOffset ?? 0, data.byteLength ?? undefined));
 export const runningStep = status => status.stateCode & 0x0f;
 export const isOffStep = status => [0,5].includes(runningStep(status));
@@ -16,7 +16,7 @@ export class HeatGenieBLE {
     try {
       const status=parseHeatGenieStatus(data);
       this.lastVerifiedStatus=status;this.lastStatusAt=Date.now();
-      this.onLog(`CRC OK | Oda ${status.roomTemp.toFixed(1)} °C | Kasa ${status.caseTemp.toFixed(1)} °C | Akü ${status.voltage.toFixed(1)} V | Hedef ${status.target} °C | Adım ${runningStep(status)} | Hata 0x${status.errorFlags.toString(16)}`);
+      this.onLog(`CRC OK | Oda ${status.roomTemp.toFixed(1)} °C | Kasa ${status.caseTemp.toFixed(1)} °C | Akü ${status.voltage.toFixed(1)} V | Hedef ${status.target} °C | Adım ${runningStep(status)} | Kayıt34=0x${status.register34.toString(16).padStart(2,'0')} (anlamı belirsiz) | Hata 0x${status.errorFlags.toString(16)}`);
       this.onStatus(status);
       if(this.waiter && this.waiter.predicate(status)) this.completeWaiter(true);
     }catch(e){this.onLog(`Paket atlandı: ${e.message}`);}
@@ -90,6 +90,10 @@ export class HeatGenieBLE {
         const timer=setTimeout(()=>this.completeWaiter(false), operation==='target'?6500:16000);
         this.waiter={resolve,predicate,timer};
       });
+      if(operation==='start'){
+        const now=this.lastVerifiedStatus;
+        this.onLog(`START alan karşılaştırması: kayıt34 0x${old.register34.toString(16).padStart(2,'0')} → 0x${(now?.register34 ?? old.register34).toString(16).padStart(2,'0')}; adım ${runningStep(old)} → ${now?runningStep(now):'bilinmiyor'}. Kayıt34 anlamı kesin değil, ateşleme kanıtı değildir.`);
+      }
       if(confirmed){
         this.onLog(operation==='target' ? `CİHAZ HEDEF OKUMASI DOĞRULANDI: ${value} °C` : `CİHAZ DURUM DEĞİŞİMİ GÖRÜLDÜ (${operation}); ateşleme/soğutmanın tamamlandığı anlamına gelmez.`);
       }else this.onLog(`CİHAZ ETKİSİ DOĞRULANAMADI (${operation}). Aynı komutu otomatik tekrarlama.`);
@@ -97,7 +101,34 @@ export class HeatGenieBLE {
     }catch(e){this.onLog(`3A01 komut hatası (${operation}): ${e.message}`);throw e;}
     finally{this.writePending=false;}
   }
-  async start(){return this.sendCommand('start');}
+  /** V3.3 kontrollü START denemesi: aynı mevcut güç komutunu sabit sıcaklık modu tekrar seçildikten sonra gönderir.
+   * Kullanıcı tek seferlik onay verir. Bu sıralamanın RE5011 üzerinde işe yaradığı henüz doğrulanmadı.
+   * STOP ve hedef yazma yolları değiştirilmemiştir.
+   */
+  async startWithConstantMode(){
+    if(!this.canControl)throw new Error('START: geçerli BLE bağlantısı ve telemetri bekleniyor.');
+    const initial=this.lastVerifiedStatus;
+    if(initial.errorFlags)throw new Error('Cihaz hata bildiriyor; START testi durduruldu.');
+    if(!isOffStep(initial))throw new Error('START testi yalnızca kapalı/bekleme adımında yapılabilir.');
+    if(initial.fan || initial.pump || initial.glow)throw new Error('Fan/pompa/kızdırma hâlâ çalışıyor. Soğutma bitmeden START testi yapılmaz.');
+    const mode=(initial.flags >> 5) & 0x03;
+    if(mode!==0)throw new Error(`Cihazın çalışma modu ${mode}; bu test sabit sıcaklık modunu değiştirmeyecek. Önce orijinal kumandadan Sabit modunu seç.`);
+    const frame=guardedBuild('constant-mode');
+    this.writePending=true;
+    try {
+      this.onLog(`V3.3 START öncesi SABİT MOD teyidi: ${hexBytes(frame)} | Adım=${runningStep(initial)}, kasa=${initial.caseTemp.toFixed(1)}°C, kayıt34=0x${initial.register34.toString(16).padStart(2,'0')}`);
+      await this.writeChar.writeValueWithResponse(frame);
+      this.onLog('Sabit mod GATT yazma onayı alındı; ısıtıcının modu uyguladığını tek başına kanıtlamaz.');
+      await new Promise(resolve=>setTimeout(resolve,1300));
+      const current=this.lastVerifiedStatus;
+      if(!this.connected || !current || Date.now()-this.lastStatusAt>4500)throw new Error('Mod teyidi sonrası güncel durum okunamadı; START gönderilmedi.');
+      if(current.errorFlags || !isOffStep(current) || current.fan || current.pump || current.glow)throw new Error('Mod teyidi sonrasında ısıtıcı durumu değişti / hata oluştu; START gönderilmedi.');
+      if(((current.flags>>5)&3)!==0)throw new Error('Sabit sıcaklık modu doğrulanamadı; START gönderilmedi.');
+    } finally {this.writePending=false;}
+    this.onLog('Sabit sıcaklık modu hâlâ seçili. Tek START komutu gönderiliyor (tekrar yok).');
+    return this.sendCommand('start');
+  }
+  async start(){return this.startWithConstantMode();}
   async stop(){return this.sendCommand('stop');}
   async target(degrees){return this.sendCommand('target',degrees);}
 }

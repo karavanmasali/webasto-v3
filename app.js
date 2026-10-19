@@ -1,5 +1,5 @@
-import {changeStart,changeStop,updateAuto,safeConfig,clamp,thermostatDecision} from './thermostat.mjs';
-import {HeatGenieBLE} from './ble.js';
+import {changeStart,changeStop,updateAuto,safeConfig,clamp,thermostatDecision} from './thermostat.mjs?v=3.3.0';
+import {HeatGenieBLE} from './ble.js?v=3.3.0';
 const $=id=>document.getElementById(id);
 const keys=['startMinus','startPlus','stopMinus','stopPlus','targetMinus','targetPlus'];
 let cfg;
@@ -55,14 +55,14 @@ function render(){
  $('demoBtn').textContent=mode==='demo'?'Demoyu kapat':'Demo aç';
  $('startBtn').disabled=!ready() || busy || (mode==='ble' && (!targetTestConfirmed || ![0,5].includes((actualState??255)&0x0f))) || (mode==='demo' && heater==='on');
  $('stopBtn').disabled=!ready() || busy || (mode==='ble' && (!targetTestConfirmed || [0,5].includes((actualState??255)&0x0f))) || (mode==='demo' && heater==='off');
- $('targetMinus').disabled=!ready() || busy || cfg.auto || (mode==='ble' && (targetOnDevice===null || targetOnDevice<=8));
- $('targetPlus').disabled=!ready() || busy || cfg.auto || (mode==='ble' && (targetOnDevice===null || targetOnDevice>=36));
+ $('targetMinus').disabled=!ready() || busy || cfg.auto || (mode==='ble' && (targetOnDevice===null || targetOnDevice<=10));
+ $('targetPlus').disabled=!ready() || busy || cfg.auto || (mode==='ble' && (targetOnDevice===null || targetOnDevice>=40));
  $('leaveBtn').disabled=mode!=='demo' || busy; // Karavandan ayrıldım otomatik komutu bu test sürümünde gerçek cihazda KAPALI
  $('manualTestArm').checked=manualArmed;
  $('manualTestArm').disabled=mode!=='ble' || busy;
  $('manualTestStatus').textContent= mode==='ble' ? (manualArmed ? (targetTestConfirmed?'Hedef testi onaylandı. START/STOP tek seferlik manuel testlere açık.':'Önce hedef sıcaklığı +1/−1 deneyip cihazdan geri okumayı doğrula.'):'Gerçek kontrol kilitli. Onay kutusunu işaretle.') : 'Yalnızca Bluetooth bağlantısı kurulduktan sonra manuel test açılabilir.';
  $('readBtn').disabled=mode!=='ble';
- $('modeNotice').innerHTML=mode==='demo'?'<strong>DEMO MODU.</strong> Ekrandaki komutlar sanaldır.':mode==='ble'?'<strong>V3.2 Manuel Komut Testi.</strong> 3A00 gerçek telemetri. Kaynak koddan alınan 3A01 komutları sadece açık onayla gönderilir; otomatik termostat kapalıdır.':'<strong>Gerçek cihaza bağlı değil.</strong> Demo veya Bluetooth tanılama kullan.';
+ $('modeNotice').innerHTML=mode==='demo'?'<strong>DEMO MODU.</strong> Ekrandaki komutlar sanaldır.':mode==='ble'?'<strong>V3.3 Manuel Komut Testi.</strong> 3A00 gerçek telemetri. Kaynak koddan alınan 3A01 komutları sadece açık onayla gönderilir; otomatik termostat kapalıdır.':'<strong>Gerçek cihaza bağlı değil.</strong> Demo veya Bluetooth tanılama kullan.';
  $('freshness').textContent=mode==='demo'?'Demo verisi':mode==='ble'?(lastUpdate?('Gerçek veri · '+(fresh()?'güncel':'eski')):'Paket bekleniyor'):'Veri yok';
  if(mode==='ble') {$('autoToggle').disabled=true;$('autoReason').textContent='Gerçek ısıtıcı için protokol doğrulaması yapılmadı; otomatik kontrol kapalı.';}
  else {$('autoToggle').disabled=(mode!=='demo'); if(!cfg.auto) $('autoReason').textContent='Otomatik mod kapalı.';}
@@ -77,7 +77,7 @@ async function command(what,arg,automatic=false){
      if(what==='target') {targetOnDevice=arg;log('Demo hedef gönderildi: '+arg+' °C');}
      lastUpdate=Date.now();
    } else {
-     const confirmation = what==='start' ? 'Bu gerçek bir START denemesidir. Isıtıcı ateşleme yapabilir. Yanında ve güvenli ortamda mısın?' : what==='stop' ? 'Bu gerçek STOP/CLEAR denemesidir. Isıtıcının normal soğutmasını gözlemlemelisin. Devam?' : `Gerçek ısıtıcı hedefi ${arg} °C yapılmaya çalışılacak. Onaylıyor musun?`;
+     const confirmation = what==='start' ? 'V3.3 START testi: Önce SABİT SICAKLIK modu bir kez doğrulanacak, ardından tek START komutu gönderilecek. Ateşleme başlayabilir. Soğutma tamamen bitmiş mi, orijinal kumanda ve CO alarmı yanında mı?' : what==='stop' ? 'Bu gerçek STOP/CLEAR denemesidir. Isıtıcının normal soğutmasını gözlemlemelisin. Devam?' : `Gerçek ısıtıcı hedefi ${arg} °C yapılmaya çalışılacak. Onaylıyor musun?`;
      if(!window.confirm(confirmation)){log('Kullanıcı gerçek komutu iptal etti.');return;}
      let result;
      if(what==='start') result=await ble.start();
@@ -95,8 +95,8 @@ $('startMinus').onclick=()=>changeSettings(c=>changeStart(c,-1));
 $('startPlus').onclick=()=>changeSettings(c=>changeStart(c,1));
 $('stopMinus').onclick=()=>{changeSettings(c=>changeStop(c,-1));if(cfg.auto) command('target',cfg.target);};
 $('stopPlus').onclick=()=>{changeSettings(c=>changeStop(c,1));if(cfg.auto) command('target',cfg.target);};
-$('targetMinus').onclick=()=>{const next=clamp((mode==='ble'?targetOnDevice:cfg.target)-1,8,36);if(mode==='demo'){cfg.target=next;save();}render();command('target',next);};
-$('targetPlus').onclick=()=>{const next=clamp((mode==='ble'?targetOnDevice:cfg.target)+1,8,36);if(mode==='demo'){cfg.target=next;save();}render();command('target',next);};
+$('targetMinus').onclick=()=>{const next=clamp((mode==='ble'?targetOnDevice:cfg.target)-1,10,40);if(mode==='demo'){cfg.target=next;save();}render();command('target',next);};
+$('targetPlus').onclick=()=>{const next=clamp((mode==='ble'?targetOnDevice:cfg.target)+1,10,40);if(mode==='demo'){cfg.target=next;save();}render();command('target',next);};
 $('stopDelay').onchange=e=>changeSettings(c=>({...c,stopDelay:Number(e.target.value)}));
 $('restartDelay').onchange=e=>changeSettings(c=>({...c,restartDelay:Number(e.target.value)}));
 $('autoToggle').onchange=e=>{
@@ -145,5 +145,5 @@ setInterval(()=>{
 window.addEventListener('pagehide',()=>{ // Kapandığında otomatik komut garantisi yok; güç kesme uygulanmaz.
  cfg.auto=false;save();
 });
-log('V3.2 test: HeatGenie komutları diesel-heater-ble 0.3.8 kaynak koduna göre hazır. RE5011 cihaz etkisi henüz doğrulanmadı. Manuel onay gerekir, otomatik kontrol kapalı.');
+log('V3.3 test: HeatGenie komutları diesel-heater-ble 0.3.8 kaynak koduna göre hazır. RE5011 cihaz etkisi henüz doğrulanmadı. Manuel onay gerekir, otomatik kontrol kapalı.');
 render();

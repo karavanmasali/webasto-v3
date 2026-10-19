@@ -1,35 +1,24 @@
-# Karavan Webasto V3.2 — kaynak protokollü manuel komut testi
+# Karavan Webasto V3.3 — kontrollü START testi
 
-**UYARI: Deneysel sürüm, gerçek ısıtıcıyı etkileyebilir. İnsansız kullanma.**
+**Deneysel sürüm.** RE5011 üzerinde gerçek START henüz doğrulanmadı. Fiziksel ısıtıcıyı yalnızca yanında, yeterli havalandırma ve CO alarmı varken test edin. Otomatik termostat Bluetooth bağlantısında kapalıdır. iPhone arka planda güvenilir çalışma sağlamaz.
 
-Dosyaları GitHub `karavanmasali/webasto-v3` deposunun **kök dizinine** yükle. `.nojekyll` zaten varsa değiştirmeye gerek yok. Settings > Pages: main / (root).
+## Neler değişti?
+- Hedef sıcaklığı +/− aralığı 10–40°C (HeatGenie kullanıcı kılavuzundaki aralık) ve demo START/STOP sınırları buna uygun.
+- STOP/CLEAR (`AA 00 61 02 FF 00 25 D3`) ve hedef gönderim komutlarının biçimi değiştirilmedi.
+- START testi: **önce sabit sıcaklık modu** (`AA 00 66 00 00 00 19 61`) bir kere gönderiliyor, 3A00 durum raporu gözleniyor, sonra **tek START** (`AA 00 61 01 FF 00 7C 83`) gönderiliyor. Yeni sıra RE5011 donanımında DOĞRULANMADI. Isıtıcı diğer moddaysa veya fan/pompa/kızdırma çalışıyorsa test iptal edilir.
+- Başlatmadan önce/sonra durum adımı ve *kayıt34* değişimi tanılama dosyasında gösteriliyor. Kayıt34 alanının anlamı henüz belirlenmedi.
+- Otomatik tekrar yok; GATT yazma onayı ateşlemenin gerçekleştiği anlamına gelmez.
 
-## Yapılanlar
-- RE5011 `181A` servis, `3A00` notify/okuma, `3A01` GATT write.
-- `3A00` durum raporlarının CRC16 doğrulaması ve canlı sıcaklık/voltaj okuma.
-- `diesel-heater-ble-0.3.8` (ProtocolHeatGenie) kütüphanesinden aynı 8 baytlık güç ve sıcaklık komutlarının JavaScript'e aktarılması.
-- **Kullanıcının açık onayıyla tek seferlik manuel deneme** (otomatik komut tekrarı yok).
-- Testten önce onay kutusu; ilk önce hedef sıcaklık +/− ve 3A00'den eşleşme görülürse START/STOP düğmeleri etkinleşir.
-- GATT aktarım yanıtı, fiziksel cihaz eyleminden ayrı kaydedilir. Sonuç alınmazsa yazma otomatik tekrarlanmaz.
-- Otomatik termostat gerçek cihazda KAPALI ve iOS arka plan sorunu çözülmüş değildir.
+## GitHub
+ZIP'i çıkarıp tüm dosyaları `karavanmasali/webasto-v3` deponun **köküne** yükle (`Add file` → `Upload files` → `Commit changes`). `main` ve `/(root)` Pages ayarları aynı kalır. `.nojekyll` değişmiyorsa yeniden oluşturma. Sitede Ctrl+Shift+R yap ve başlığın `V3.3 START TEST` olduğunu kontrol et.
 
-## Test sırası
-1. Windows 11 Chrome/Edge ile Pages sitesini aç; HeatGenie bağlantısını kes, `RE5011` seç.
-2. Gerçek `3A00` verileri akmaya başlayınca **manuel test onay kutusunu** işaretle.
-3. **Hedef +** veya **Hedef −** butonuna bir kere bas; onay penceresini kabul et.
-4. Yaklaşık 7 saniye sonra 'Cihaz hedefi geri okundu' mesajı gelirse ilk adım geçti. Gelmezse tanı kayıtlarını indir; START/STOP'a geçme.
-5. Hedef başarılıysa ve ortam güvenliyse, orijinal kontrol yanında **START** ve gerekirse **STOP/CLEAR** butonunu tek seferlik dene, normal soğutmayı izle. Komutların daha önce çalışmamış olabileceğini göz önünde bulundur.
-6. `Tanı kayıtlarını indir` ile kaydı paylaş.
+## Deneme
+1. Isıtıcının normal soğutmasını tamamladığını, fan/pompa/kızdırmanın kapalı olduğunu kontrol et. Bluetooth bağlı ve hata kodu sıfır olsun.
+2. Manuel test onayını aç; önce hedef +/− ile bir kez cihazdan geri okuma testini tamamla.
+3. `START (SABİT MOD TEST)` düğmesine **bir kere** bas. Her komut iki ayrı GATT yazması içeren onaylı bir testtir; ekranda ve gerçek cihazda ateşleme başlayıp başlamadığını izle.
+4. Başlamazsa başka deneme yapma. `Tanı kayıtlarını indir` çıktısını paylaş. Başlarsa çalışmasını fiziksel olarak teyit et; STOP/CLEAR ile normal soğutma tamamlat.
 
-## Komut örnekleri
-- START `AA 00 61 01 FF 00 7C 83`
-- STOP `AA 00 61 02 FF 00 25 D3`
-- Hedef 22°C `AA 00 66 01 00 16 5C A6`
-- Hedef 23°C `AA 00 66 01 00 17 4C 87`
+## Kanıt ve sınırlar
+Önceki V3.2 kaydında 20:55:08'de START GATT yazması başarılıydı, ama cihazın durum adımı 5'te kalmıştı; durum paketinde ham kayıt34 02→01 değişmişti. Bu alan için protokol belgesi anlam belirtmiyor. Bu nedenle "START kabul edildi" veya "başlatma düzeldi" sonucunu peşinen iddia etmiyoruz.
 
-Bu değerler açık kaynak koddan doğrulandı ama **kullanıcının RE5011 cihazı üzerinde fiili kabulü henüz teyit edilmedi.** Önceki başarısız START/STOP paketleriyle aynı oldukları özellikle belirtilmelidir.
-
-## Telif
-Komut oluşturma yöntemi, `diesel-heater-ble` `ProtocolHeatGenie` kaynak kodundan uyarlanmıştır.
-Orijinal telif: Copyright (c) 2024 Spettacolo83. MIT Lisansı (LICENSE-THIRD-PARTY.txt içinde).
-https://github.com/Spettacolo83/diesel-heater-ble
+Komut profili: `diesel-heater-ble 0.3.8 / ProtocolHeatGenie`, MIT (LICENSE-THIRD-PARTY.txt). HeatGenie 10–40°C limit kaynağı: https://www.dieselheat.com.au/dieselheat-2-2kw-air-heatgenie-app-user-guide/

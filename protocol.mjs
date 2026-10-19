@@ -46,6 +46,7 @@ export function parseHeatGenieStatus(input) {
     glow: Boolean(flags & 0b00001000),
     setLevel: data.getUint8(32),
     target: data.getUint8(33),
+    register34: data.getUint8(34), // Ham alan; anlamı kesin değil (02→01 START sonrası gözlendi).
     crcOk: true,
   };
 }

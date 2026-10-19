@@ -1,6 +1,6 @@
 /** V3 kontrol hesabı: ısıtıcıya ulaşım katmanından bağımsız, test edilebilir. */
 export const MIN_GAP = 2;
-export const LIMITS = Object.freeze({ startMin: 8, startMax: 34, stopMin: 10, stopMax: 36, targetMin: 8, targetMax: 36 });
+export const LIMITS = Object.freeze({ startMin: 10, startMax: 38, stopMin: 12, stopMax: 40, targetMin: 10, targetMax: 40 });
 export const clamp = (n, low, high) => Math.max(low, Math.min(high, n));
 export function changeStart(cfg, delta) {
   const next = {...cfg};
@@ -19,9 +19,9 @@ export function updateAuto(cfg, enabled) {
 export function safeConfig(raw) {
   const cfg = {start: 20, stop: 25, target: 25, auto: false, stopDelay: 20, restartDelay: 120};
   if (raw && typeof raw === 'object') {
-    if (Number.isFinite(raw.start)) cfg.start = clamp(Math.round(raw.start), 8, 34);
-    if (Number.isFinite(raw.stop)) cfg.stop = clamp(Math.round(raw.stop), cfg.start + MIN_GAP, 36);
-    if (Number.isFinite(raw.target)) cfg.target = clamp(Math.round(raw.target), 8, 36);
+    if (Number.isFinite(raw.start)) cfg.start = clamp(Math.round(raw.start), LIMITS.startMin, LIMITS.startMax);
+    if (Number.isFinite(raw.stop)) cfg.stop = clamp(Math.round(raw.stop), cfg.start + MIN_GAP, LIMITS.stopMax);
+    if (Number.isFinite(raw.target)) cfg.target = clamp(Math.round(raw.target), LIMITS.targetMin, LIMITS.targetMax);
     if ([10,20,30,60].includes(raw.stopDelay)) cfg.stopDelay = raw.stopDelay;
     if ([120,180,300,600].includes(raw.restartDelay)) cfg.restartDelay = raw.restartDelay;
     // Güvenlik: Yeniden yükleme sonrası otomatik kontrol kendi kendine açılmaz.

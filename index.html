@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1223" />
+  <meta name="description" content="Karavan Webasto V3 — HeatGenie uyumlu ısıtıcı için kontrol paneli ve Bluetooth tanılama." />
+  <title>Karavan Webasto V3</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="style.css?v=3.0.0" />
+  <script type="module" src="app.js?v=3.0.0"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <div class="brand-mark" aria-hidden="true">♨</div>
+      <div class="top-title"><h1>Karavan Webasto <span>V3</span></h1><p>Quatro · HeatGenie / RE5011</p></div>
+      <span id="connectionBadge" class="pill offline">Bağlı değil</span>
+    </header>
+
+    <section class="notice" id="modeNotice" role="status">
+      <strong>Gerçek cihaza bağlı değil.</strong> Demo moduyla termostat mantığını deneyebilir veya Bluetooth tanılaması yapabilirsin.
+    </section>
+
+    <section class="panel" aria-label="Bağlantı">
+      <div class="section-heading"><h2>Bağlantı</h2><span id="deviceName">Cihaz seçilmedi</span></div>
+      <div class="actions">
+        <button id="connectBtn" class="btn primary">Bluetooth ile cihazı bul</button>
+        <button id="disconnectBtn" class="btn secondary" disabled>Bağlantıyı kes</button>
+        <button id="demoBtn" class="btn ghost">Demo aç</button>
+      </div>
+      <p class="help">iPhone’da Bluetooth için Bluefy; Windows/Android’de desteklenen Chrome/Edge sürümünü kullan. HeatGenie uygulamasını bağlantı sırasında kapat.</p>
+    </section>
+
+    <section class="status-card" aria-label="Isıtıcı durumu">
+      <div class="status-icon" aria-hidden="true">♨</div>
+      <div><div class="eyebrow">ISITICI DURUMU</div><h2 id="heaterStatus">Bilinmiyor</h2><p id="heaterSubstatus">Cihaz verisi bekleniyor</p></div>
+    </section>
+
+    <section class="metrics" aria-label="Ölçümler">
+      <div class="metric"><label>Ortam sıcaklığı</label><strong id="roomTemp">—</strong><small>°C</small></div>
+      <div class="metric"><label>Hedef sıcaklık</label><strong id="physicalTarget">—</strong><small>°C</small></div>
+      <div class="metric"><label>Kasa sıcaklığı</label><strong id="caseTemp">—</strong><small>°C</small></div>
+      <div class="metric"><label>Akü voltajı</label><strong id="voltage">—</strong><small>V</small></div>
+      <div class="metric"><label>Fan</label><strong id="fan">—</strong></div>
+      <div class="metric"><label>Pompa / kızdırma</label><strong id="pump">—</strong></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading"><h2>Manuel kontrol</h2><span>START / STOP → CLEAR</span></div>
+      <div class="actions pair"><button id="startBtn" class="btn start" disabled>▶ START</button><button id="stopBtn" class="btn stop" disabled>■ STOP / CLEAR</button></div>
+      <div class="divider"></div>
+      <div class="section-heading"><h2>HeatGenie hedef sıcaklığı</h2><span>8–36 °C</span></div>
+      <div class="stepper"><button id="targetMinus" aria-label="Hedef sıcaklığı azalt" disabled>−</button><strong id="targetValue">25 °C</strong><button id="targetPlus" aria-label="Hedef sıcaklığı artır" disabled>+</button></div>
+      <p class="help">Otomatik mod açıkken hedef değer STOP sıcaklığına eşitlenir. Manuel modda ayrı ayarlanır.</p>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading"><h2>Otomatik termostat</h2><label class="switch"><input id="autoToggle" type="checkbox" /><span class="knob"></span><span class="sr-only">Otomatik kontrol</span></label></div>
+      <p class="help space-top">Ortam START seviyesine indiğinde çalıştırır, STOP seviyesinde yeterince kalınca kontrollü durdurur.</p>
+      <div class="setting">
+        <div><strong>START sıcaklığı</strong><p>Bu değere düşünce açılır</p></div>
+        <div class="mini-stepper"><button id="startMinus" aria-label="START azalt">−</button><output id="startValue">20 °C</output><button id="startPlus" aria-label="START artır">+</button></div>
+      </div>
+      <div class="setting">
+        <div><strong>STOP sıcaklığı</strong><p>Bu değere çıkınca kapanır</p></div>
+        <div class="mini-stepper"><button id="stopMinus" aria-label="STOP azalt">−</button><output id="stopValue">25 °C</output><button id="stopPlus" aria-label="STOP artır">+</button></div>
+      </div>
+      <div class="setting"><div><strong>STOP gecikmesi</strong><p>Sıcaklığın eşikte kalma süresi</p></div><select id="stopDelay"><option value="10">10 sn</option><option value="20">20 sn</option><option value="30">30 sn</option><option value="60">60 sn</option></select></div>
+      <div class="setting"><div><strong>Yeniden başlatma beklemesi</strong><p>Kontrollü duruş sonrası</p></div><select id="restartDelay"><option value="120">120 sn</option><option value="180">180 sn</option><option value="300">300 sn</option><option value="600">600 sn</option></select></div>
+      <p class="rule">STOP değeri START değerinden en az <b>2 °C</b> yüksek olmalıdır. STOP ayarı değiştiğinde otomatik hedef de değişir.</p>
+      <p class="help" id="autoReason">Otomatik mod kapalı.</p>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading"><h2>Güvenlik ve tanılama</h2><span id="freshness">Veri yok</span></div>
+      <div class="actions"><button class="btn amber" id="leaveBtn" disabled>Karavandan ayrıldım</button><button class="btn secondary" id="readBtn" disabled>Veri oku</button><button class="btn ghost" id="exportBtn">Tanı kayıtlarını indir</button></div>
+      <p class="help">Karavandan ayrıldım: otomatiği kapatır ve gerçek kontrol destekleniyorsa normal STOP komutu gönderir. Isıtıcının elektrik beslemesini kesmez.</p>
+      <details><summary>Bluetooth tanılama kayıtları</summary><pre id="logOutput" class="logs">Henüz kayıt yok.</pre></details>
+      <details><summary>Teknik durum / V3 sınırları</summary><p class="help">Bluetooth GATT bağlantısı, servis keşfi ve ham bildirim izleme çalışır. HeatGenie’nin cihaza özel komut paketleri ve durum çözümleyicisi henüz doğrulanmadığı için gerçek cihaza START, STOP veya hedef sıcaklığı paketi gönderilmez; termostat gerçek cihazda etkinleştirilmez. Demo gerçek ısıtıcıyı kumanda etmez. Amaç doğrulanmamış bir paketin ısıtıcıya gönderilmesini önlemektir.</p></details>
+    </section>
+    <footer>Karavan Webasto V3 · Yerel kayıt · İnternet gerektirmeyen termostat mantığı (sayfa açıkken) · CO alarmının yerine geçmez.</footer>
+  </main>
+</body>
+</html>

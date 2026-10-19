@@ -4,7 +4,7 @@
  * SOURCE CONFIRMED. Physical RE5011 acceptance is NOT confirmed.
  * Copyright (c) 2024 Spettacolo83 (original Python library).
  */
-import {crc16CcittZero} from './protocol.mjs?v=3.4.0';
+import {crc16CcittZero} from './protocol.mjs?v=3.5.0';
 export const commandProfile = Object.freeze({
   source: 'diesel-heater-ble 0.3.8 ProtocolHeatGenie',
   hardwareVerified: false,
@@ -23,6 +23,7 @@ export function guardedBuild(operation, target) {
   switch (operation) {
     case 'start': return buildHeatGenieFrame(0x61,0x01,0xff,0);
     case 'auto-update': return buildHeatGenieFrame(0x65,0x02,0x14,0x1e); // ProtocolHeatGenie 0.3.8: command 1, register area 2, 20, 30
+    case 'start-stop-mode': return buildHeatGenieFrame(0x66,0x00,0x00,0x02); // ProtocolHeatGenie: run-mode 2 = start/stop
     case 'constant-mode': return buildHeatGenieFrame(0x66,0x00,0x00,0x00); // HeatGenie 0.3.8 command 2 / argument 0
     case 'stop': return buildHeatGenieFrame(0x61,0x02,0xff,0);
     case 'target':

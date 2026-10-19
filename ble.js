@@ -1,6 +1,6 @@
 /** HeatGenie RE5011 BLE — supervised/manual diagnostics ONLY. */
-import {HEATGENIE_SERVICE, HEATGENIE_READ_CHAR, HEATGENIE_WRITE_CHAR, parseHeatGenieStatus, crc16CcittZero} from './protocol.mjs?v=3.4.0';
-import {guardedBuild,hexBytes} from './command-profile.mjs?v=3.4.0';
+import {HEATGENIE_SERVICE, HEATGENIE_READ_CHAR, HEATGENIE_WRITE_CHAR, parseHeatGenieStatus, crc16CcittZero} from './protocol.mjs?v=3.5.0';
+import {guardedBuild,hexBytes} from './command-profile.mjs?v=3.5.0';
 const bufferHex = data => hexBytes(new Uint8Array(data.buffer ?? data, data.byteOffset ?? 0, data.byteLength ?? undefined));
 export const runningStep = status => status.stateCode & 0x0f;
 export const isOffStep = status => [0,5].includes(runningStep(status));
@@ -27,7 +27,7 @@ export class HeatGenieBLE {
       if(raw.length===0){return;} // Bazı cihaz sürümleri ilk subscribe/read anında boş DataView verir.
       const status=parseHeatGenieStatus(data);
       this.lastVerifiedStatus=status;this.lastStatusAt=Date.now();
-      this.onLog(`CRC OK | Oda ${status.roomTemp.toFixed(1)} °C | Kasa ${status.caseTemp.toFixed(1)} °C | Akü ${status.voltage.toFixed(1)} V | Hedef ${status.target} °C | Adım ${runningStep(status)} | Kayıt34=0x${status.register34.toString(16).padStart(2,'0')} (anlamı belirsiz) | Hata 0x${status.errorFlags.toString(16)}`);
+      this.onLog(`CRC OK | Oda ${status.roomTemp.toFixed(1)} °C | Kasa ${status.caseTemp.toFixed(1)} °C | Akü ${status.voltage.toFixed(1)} V | Hedef ${status.target} °C | Mod ${((status.flags>>5)&3)} | Adım ${runningStep(status)} | Kayıt34=0x${status.register34.toString(16).padStart(2,'0')} (anlamı belirsiz) | Hata 0x${status.errorFlags.toString(16)}`);
       this.onStatus(status);
       if(this.waiter && this.waiter.predicate(status)) this.completeWaiter(true);
     }catch(e){this.onLog(`Paket atlandı: ${e.message}`);}
@@ -112,33 +112,69 @@ export class HeatGenieBLE {
     }catch(e){this.onLog(`3A01 komut hatası (${operation}): ${e.message}`);throw e;}
     finally{this.writePending=false;}
   }
-  /** V3.4: An app-protocol AUTO-UPDATE registration is sent before one ON request.
-   * The register-area write originates in ProtocolHeatGenie.build_command(1,0,0).
-   * It is not an alternative ON opcode; it may not fix RE5011.
-   * No STOP or target code path is touched. No automatic repeats.
-   */
-  async startWithAutoUpdate(){
-    if(!this.canControl)throw new Error('START: geçerli BLE bağlantısı ve telemetri bekleniyor.');
-    const initial=this.lastVerifiedStatus;
-    if(initial.errorFlags)throw new Error('Cihaz hata bildiriyor; START testi durduruldu.');
-    if(!isOffStep(initial))throw new Error('START testi yalnızca kapalı/bekleme adımında yapılabilir.');
-    if(initial.fan || initial.pump || initial.glow)throw new Error('Fan/pompa/kızdırma hâlâ çalışıyor. Soğutma bitmeden START testi yapılmaz.');
-    const frame=guardedBuild('auto-update');
+  /** Controller reports HeatGenie run mode in high bits of flags register. */
+  get runMode(){
+    return this.lastVerifiedStatus ? ((this.lastVerifiedStatus.flags >> 5) & 3) : null;
+  }
+  async waitForStatus(predicate, durationMs){
+    if(this.lastVerifiedStatus && predicate(this.lastVerifiedStatus))return true;
+    return new Promise(resolve=>{
+      const timer=setTimeout(()=>this.completeWaiter(false),durationMs);
+      this.waiter={resolve,predicate,timer};
+    });
+  }
+  async writeMode(value){
+    if(!this.canControl)throw new Error('Mod işlemi için BLE telemetrisi güncel değil.');
+    if(this.lastVerifiedStatus.errorFlags)throw new Error('Cihaz hata bildiriyor. Mod değiştirilmedi.');
+    if(!isOffStep(this.lastVerifiedStatus) || this.lastVerifiedStatus.fan || this.lastVerifiedStatus.pump || this.lastVerifiedStatus.glow)
+      throw new Error('Mod değişikliği yalnızca tamamen durmuş ısıtıcıda denenir.');
+    const oldMode=this.runMode;
+    if(oldMode===value){this.onLog('Mod zaten '+value+'. Yazma gerekmedi.');return true;}
+    const beforeAt=this.lastStatusAt;
+    const bytes=guardedBuild(value===2?'start-stop-mode':'constant-mode');
+    this.onLog(`MOD ${oldMode} → ${value} yazılıyor (0x66): ${hexBytes(bytes)} | Adım=${runningStep(this.lastVerifiedStatus)}`);
     this.writePending=true;
     try {
-      const lastBefore=this.lastStatusAt;
-      this.onLog(`V3.4 START öncesi otomatik durum kayıt isteği: ${hexBytes(frame)} | Adım=${runningStep(initial)}, kasa=${initial.caseTemp.toFixed(1)}°C`);
-      await this.writeChar.writeValueWithResponse(frame);
-      this.onLog('Durum kayıt isteği GATT yazma yanıtı aldı. 8 bayt ACK ve yeni durum paketleri tanıya kaydedilecek.');
-      await new Promise(resolve=>setTimeout(resolve,1200));
+      await this.writeChar.writeValueWithResponse(bytes);
+      this.onLog('MOD GATT yazma yanıtı geldi. Cihazın yeni modunu bekliyorum.');
+      // A response can arrive during the await; only a NEW status confirms it.
       const current=this.lastVerifiedStatus;
-      if(!this.connected || !current || Date.now()-this.lastStatusAt>4500 || this.lastStatusAt<=lastBefore)throw new Error('Kayıt isteği sonrası yeni 3A00 telemetrisi görülmedi; START GÖNDERİLMEDİ.');
-      if(current.errorFlags || !isOffStep(current) || current.fan || current.pump || current.glow)throw new Error('Kayıt isteği sonrası ısıtıcı durumu değişti; START GÖNDERİLMEDİ.');
+      const already=this.lastStatusAt>beforeAt && current && (((current.flags>>5)&3)===value);
+      const confirmed=already || await this.waitForStatus(s=>((s.flags>>5)&3)===value,9000);
+      this.onLog(`MOD ${value} SONUÇ: ${confirmed?'3A00 cihaz kaydından doğrulandı.':'DOĞRULANMADI. START GÖNDERİLMEYECEK.'}`);
+      return confirmed;
     } finally {this.writePending=false;}
-    this.onLog('V3.4 yeni durum paketi alındı; tek START paketi gönderiliyor (tekrar yok).');
-    return this.sendCommand('start');
   }
-  async start(){return this.startWithAutoUpdate();}
+  /** Experimental app-backed mode 2 (Start/Stop) before ONE power-on.
+   * Unlike v3.4: no 0x65 refresh; this changes a *documented* controller mode.
+   * If mode is not confirmed on live 3A00 status, start is never sent.
+   * No automatic restore while power state is uncertain; user has explicit restore action.
+   */
+  async startWithMode2(){
+    if(!this.canControl)throw new Error('START: geçerli BLE bağlantısı ve telemetri bekleniyor.');
+    const initial=this.lastVerifiedStatus;
+    if(initial.errorFlags)throw new Error('Cihaz hatası var. START gönderilmedi.');
+    if(!isOffStep(initial) || initial.fan || initial.pump || initial.glow)
+      throw new Error('Isıtıcı tamamen kapanıp fan durmadan START denenmez.');
+    this.onLog(`V3.5 MODE-2 testi: önce mod=${this.runMode}, hedef=${initial.target}, adım=${runningStep(initial)}. Mod 2 doğrulanırsa tek START gönderilecek.`);
+    const modeOK=await this.writeMode(2);
+    if(!modeOK) return {transportAccepted:true, confirmed:false, modeVerified:false, kind:'mode'};
+    // Give controller a moment to apply the new mode and confirm stability.
+    await new Promise(resolve=>setTimeout(resolve,700));
+    const now=this.lastVerifiedStatus;
+    if(!this.canControl || this.runMode!==2 || !now || now.errorFlags || !isOffStep(now) || now.fan || now.pump || now.glow){
+      this.onLog('Mod sonrası durum kararlı veya kapalı değil; START gönderilmedi.');
+      return {transportAccepted:true,confirmed:false,modeVerified:true,kind:'mode'};
+    }
+    this.onLog('MOD 2 3A00 üzerinden DOĞRULANDI. Şimdi tek 0x61 START gönderiliyor.');
+    const result=await this.sendCommand('start');
+    return {...result, modeVerified:true};
+  }
+  async restoreTemperatureMode(){
+    this.onLog('V3.5: kullanıcı talebiyle otomatik sıcaklık moduna (0) dönülüyor.');
+    return this.writeMode(0);
+  }
+  async start(){return this.startWithMode2();}
   async stop(){return this.sendCommand('stop');}
   async target(degrees){return this.sendCommand('target',degrees);}
 }

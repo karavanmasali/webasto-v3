@@ -5,6 +5,7 @@ import {crc16CcittZero} from '../protocol.mjs';
 const fixtures=[
  ['start',undefined,'AA 00 61 01 FF 00 7C 83'],
  ['constant-mode',undefined,'AA 00 66 00 00 00 19 61'],
+ ['start-stop-mode',undefined,'AA 00 66 00 00 02 39 23'],
  ['auto-update',undefined,'AA 00 65 02 14 1E D0 95'],
  ['target',10,'AA 00 66 01 00 0A 8F 1B'],
  ['target',40,'AA 00 66 01 00 28 8B 3B'],

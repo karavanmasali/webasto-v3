@@ -1,6 +1,6 @@
 /** HeatGenie RE5011 BLE — supervised/manual diagnostics ONLY. */
-import {HEATGENIE_SERVICE, HEATGENIE_READ_CHAR, HEATGENIE_WRITE_CHAR, parseHeatGenieStatus, crc16CcittZero} from './protocol.mjs?v=3.5.0';
-import {guardedBuild,hexBytes} from './command-profile.mjs?v=3.5.0';
+import {HEATGENIE_SERVICE, HEATGENIE_READ_CHAR, HEATGENIE_WRITE_CHAR, parseHeatGenieStatus, crc16CcittZero} from './protocol.mjs?v=3.6.0';
+import {guardedBuild,hexBytes} from './command-profile.mjs?v=3.6.0';
 const bufferHex = data => hexBytes(new Uint8Array(data.buffer ?? data, data.byteOffset ?? 0, data.byteLength ?? undefined));
 export const runningStep = status => status.stateCode & 0x0f;
 export const isOffStep = status => [0,5].includes(runningStep(status));
@@ -9,7 +9,7 @@ export class HeatGenieBLE {
     this.onLog=onLog;this.onDisconnect=onDisconnect;this.onStatus=onStatus;
     this.device=null;this.server=null;this.chars=[];this.writeChar=null;
     this.lastVerifiedStatus=null;this.lastStatusAt=0;
-    this.connected=false;this.writePending=false;this.waiter=null;
+    this.connected=false;this.writePending=false;this.waiter=null;this.startTried=false;
   }
   process(data, source) {
     this.onLog(`${source}: ${bufferHex(data)}`);
@@ -37,7 +37,7 @@ export class HeatGenieBLE {
     const w=this.waiter;this.waiter=null;clearTimeout(w.timer);w.resolve(confirmed);
   }
   onLost() {
-    this.connected=false;this.chars=[];this.writeChar=null;this.lastVerifiedStatus=null;this.lastStatusAt=0;
+    this.connected=false;this.chars=[];this.writeChar=null;this.lastVerifiedStatus=null;this.lastStatusAt=0;this.startTried=false;
     this.completeWaiter(false);this.onLog('Bluetooth bağlantısı kesildi. Manuel test durduruldu.');this.onDisconnect();
   }
   async connect() {
@@ -71,7 +71,7 @@ export class HeatGenieBLE {
   }
   disconnect(){
     if(this.device?.gatt?.connected)this.device.gatt.disconnect();
-    this.connected=false;this.chars=[];this.writeChar=null;this.lastVerifiedStatus=null;this.lastStatusAt=0;this.completeWaiter(false);
+    this.connected=false;this.chars=[];this.writeChar=null;this.lastVerifiedStatus=null;this.lastStatusAt=0;this.startTried=false;this.completeWaiter(false);
   }
   get canControl() {
     return this.connected && !!this.writeChar && !!this.lastVerifiedStatus &&
@@ -131,7 +131,9 @@ export class HeatGenieBLE {
     const oldMode=this.runMode;
     if(oldMode===value){this.onLog('Mod zaten '+value+'. Yazma gerekmedi.');return true;}
     const beforeAt=this.lastStatusAt;
-    const bytes=guardedBuild(value===2?'start-stop-mode':'constant-mode');
+    if(![0,1,2].includes(value))throw new Error('Yalnızca mod 0/1/2 desteklenir.');
+    const modeOperation={0:'constant-mode',1:'manual-gear-mode',2:'start-stop-mode'}[value];
+    const bytes=guardedBuild(modeOperation);
     this.onLog(`MOD ${oldMode} → ${value} yazılıyor (0x66): ${hexBytes(bytes)} | Adım=${runningStep(this.lastVerifiedStatus)}`);
     this.writePending=true;
     try {
@@ -145,36 +147,42 @@ export class HeatGenieBLE {
       return confirmed;
     } finally {this.writePending=false;}
   }
-  /** Experimental app-backed mode 2 (Start/Stop) before ONE power-on.
-   * Unlike v3.4: no 0x65 refresh; this changes a *documented* controller mode.
-   * If mode is not confirmed on live 3A00 status, start is never sent.
-   * No automatic restore while power state is uncertain; user has explicit restore action.
+  /** V3.6 supervised last-known alternate: manual gear mode 1 + one standard 0x61 START.
+   * Source library defines manual mode=1 but hardware START is NOT yet validated.
+   * This test may change heater mode. Not unattended automation.
    */
-  async startWithMode2(){
-    if(!this.canControl)throw new Error('START: geçerli BLE bağlantısı ve telemetri bekleniyor.');
+  async startWithMode1(){
+    if(this.startTried)throw new Error('Bu bağlantıda zaten START denendi. Önce tanı kaydını indir; ikinci otomatik deneme yok.');
+    if(!this.canControl)throw new Error('START: güncel BLE bağlantısı ve telemetri gerekiyor.');
     const initial=this.lastVerifiedStatus;
-    if(initial.errorFlags)throw new Error('Cihaz hatası var. START gönderilmedi.');
+    if(initial.errorFlags)throw new Error('Cihaz hatası var; START gönderilmiyor.');
     if(!isOffStep(initial) || initial.fan || initial.pump || initial.glow)
-      throw new Error('Isıtıcı tamamen kapanıp fan durmadan START denenmez.');
-    this.onLog(`V3.5 MODE-2 testi: önce mod=${this.runMode}, hedef=${initial.target}, adım=${runningStep(initial)}. Mod 2 doğrulanırsa tek START gönderilecek.`);
-    const modeOK=await this.writeMode(2);
-    if(!modeOK) return {transportAccepted:true, confirmed:false, modeVerified:false, kind:'mode'};
-    // Give controller a moment to apply the new mode and confirm stability.
-    await new Promise(resolve=>setTimeout(resolve,700));
+      throw new Error('START yalnızca fan/pompa/kızdırma kapalıyken denenir.');
+    if(this.runMode!==0)throw new Error(`Cihaz şu an mod ${this.runMode}. Önce “Otomatik/Sıcaklık moduna dön (0)” ile MOD 0 doğrula.`);
+    this.startTried=true;
+    this.onLog('V3.6 MOD 1 testi: mod 0 doğrulandı. 0x66 ile mod1 seçilecek, cihazdan doğrulanırsa yalnızca BİR 0x61 START gönderilecek.');
+    const confirmedMode=await this.writeMode(1);
+    if(!confirmedMode){this.onLog('MOD 1 cihazdan doğrulanmadı; START GÖNDERİLMEDİ.');return {transportAccepted:true,confirmed:false,modeVerified:false,kind:'mode'};}
+    // Mode selection itself may initiate a transition on certain controllers.
+    await new Promise(resolve=>setTimeout(resolve,800));
     const now=this.lastVerifiedStatus;
-    if(!this.canControl || this.runMode!==2 || !now || now.errorFlags || !isOffStep(now) || now.fan || now.pump || now.glow){
-      this.onLog('Mod sonrası durum kararlı veya kapalı değil; START gönderilmedi.');
-      return {transportAccepted:true,confirmed:false,modeVerified:true,kind:'mode'};
+    if(!this.canControl || !now || now.errorFlags || this.runMode!==1){
+      this.onLog('Mod1 sonrası geçerli/kararlı cihaz durumu yok. START GÖNDERİLMEDİ.');
+      return {transportAccepted:true,confirmed:false,modeVerified:false,kind:'mode'};
     }
-    this.onLog('MOD 2 3A00 üzerinden DOĞRULANDI. Şimdi tek 0x61 START gönderiliyor.');
+    if(!isOffStep(now) || now.fan || now.pump || now.glow){
+      this.onLog('UYARI: Mod 1 seçimi sonrasında çalışma/çevrim değişti. İKİNCİ START GÖNDERİLMEDİ. Cihazı gözle kontrol et.');
+      return {transportAccepted:true,confirmed:!isOffStep(now),modeVerified:true,kind:'transition'};
+    }
+    this.onLog('MOD 1 DOĞRULANDI. Bir kez kaynak protokoldeki 0x61 START paketi gönderiliyor.');
     const result=await this.sendCommand('start');
-    return {...result, modeVerified:true};
+    return {...result,modeVerified:true};
   }
   async restoreTemperatureMode(){
-    this.onLog('V3.5: kullanıcı talebiyle otomatik sıcaklık moduna (0) dönülüyor.');
+    this.onLog('V3.6: Kullanıcı isteğiyle çalışma modu 0 (sıcaklık) geri seçiliyor.');
     return this.writeMode(0);
   }
-  async start(){return this.startWithMode2();}
+  async start(){return this.startWithMode1();}
   async stop(){return this.sendCommand('stop');}
   async target(degrees){return this.sendCommand('target',degrees);}
 }

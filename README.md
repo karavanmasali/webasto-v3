@@ -1,25 +1,38 @@
-# Karavan Webasto V3.5 — MOD 2 + START Testi
+# Karavan Webasto V3.6 — Manual Mode 1 + START Diagnosis
 
-**Deneysel sürüm. RE5011’de START henüz doğrulanmadı.** 0x61 START komutu V3.2–V3.4 sürümlerinde ısıtıcıyı başlatmadı; 0x65 otomatik telemetri kaydı da işe yaramadı. V3.5 yeni bir deneme olarak, uygulama kaynak kütüphanesinde belgelenen *START/STOP çalışma modu 2* için `0x66 00 00 02` komutunu kullanır.
+**RE5011 cihazında START henüz doğrulanmadı. Yalnızca gözetimli manuel test içindir.**
 
-## Aynen korunanlar
-- **STOP/CLEAR** baytları değişmedi: `AA 00 61 02 FF 00 25 D3`.
-- **Hedef +/−** komutu aynı, sınır **10–40°C**.
-- Bluetooth 3A00 CRC telemetrisi / 3A01 GATT yazma / manuel onay / demoda termostat mantığı / gerçek cihazda otomatik kontrol KAPALI.
+## V3.5 kaydından kesin tespit
 
-## START modu testi
-1. Cihaz tamamen durmuş olmalı. Önce manüel onay ve hedef sıcaklığı +1/−1 geri okuma testi gerekir.
-2. `AA 00 66 00 00 02 [CRC16]` ile çalışma modu 2 (START/STOP) seçilir. Bu, `diesel-heater-ble 0.3.8 ProtocolHeatGenie` kaynak kodundaki `build_command(2, 2, 0)` çağrısıyla aynıdır.
-3. Mod ancak **yeni 3A00 telemetrisinin flags[6:5]==2** olduğu cihaz raporuyla doğrulanır. Sadece GATT ACK yeterli değildir.
-4. **Mod doğrulanmazsa START hiç gönderilmez.** Doğrulanırsa geçerli/hatasız/kapalı durumda yalnızca bir kez eski `AA 00 61 01 FF 00 7C 83` komutu gönderilir.
-5. Ateşleme başlamazsa dosyayı indir ve gönder; otomatik ikinci deneme yok.
+1. `AA 00 66 00 00 02 39 23` cihazdan ACK aldı ve 3A00 mod 2 oldu.
+2. Ardından `AA 00 61 01 FF 00 7C 83` GATT yazması başarılıydı ama durum 5'ten çıkmadı.
+3. `Otomatik/Sıcaklık moduna dön (0)` komutu gerçekten mod 0'a döndürdü.
+4. Kullanıcı ardından START'a bastığında **V3.5 kodu gizlice yine MOD 2 seçti.** Dolayısıyla bu iki deneme de fiilen MOD 2 + START oldu; doğrudan MOD 0 START denemesi değildi.
 
-**Mod değişikliği kalıcı olabilir.** Uygulamadaki `Otomatik/Sıcaklık moduna dön (0)` düğmesi yalnızca ısıtıcı tamamen durmuş, Bluetooth bağlantısı ve manüel onay etkin ve çalışma modu 2 ise kullanılabilir. Mod 0'a döndüğünü 3A00 kaydından doğrular. Herhangi bir ara koşulda kumandayı kullan. Modu çalışırken değiştirme.
+## V3.6'da yeni deney
 
-## GitHub kurulum
-ZIP içindeki dosyaları doğrudan `karavanmasali/webasto-v3` deposunun kök dizinine yükle, onayla. Var olan `.nojekyll` dosyasını silme. `Ctrl + Shift + R` ile önbelleği yenile. Başlık `V3.5 MOD 2 / START TEST` olmalı.
+- Tek kalan alternatif HeatGenie çalışma modu **1 (manuel güç)** denenir; kaynağı `diesel-heater-ble 0.3.8 ProtocolHeatGenie` (MIT).
+- Cihaz MOD 0'dayken, tamamen durmuşken ve kullanıcı açık onay verdiğinde `AA 00 66 00 00 01 [CRC16]` ile MOD 1 seçilir.
+- Mod 1 yalnızca canlı 3A00 flags bit 5-6 = 1 ile **doğrulanırsa** ve cihaz hâlâ kapalıysa mevcut START bir kere gönderilir. Yeni START HEX'i keşfedildiği iddia edilmez.
+- Mod değişimi tek başına çalışmayı başlatırsa ikinci START gönderilmez.
+- Her bağlantıda START yalnızca **bir kez** denenebilir. Başlamazsa ikinci kez basmak yerine log indirilir.
+- MOD 0'a geri dönüş düğmesi hem MOD 1 hem MOD 2'den çalışır (yalnızca ısıtıcı durduğunda).
 
-## Güvenli test
-Normal soğutma tamamen bittiğinde, aktif CO alarmı ve gözetimle Windows Chrome üzerinden bağlan. Manuel onayı ver, hedef +/− testini tamamla, **bir kez** `START (MOD 2 + TEK START)` bas. Başlarsa orijinal kumanda veya bilinen STOP/CLEAR ile normal kapanma/soğutma uygula. Başlamazsa hemen **Tanı kayıtlarını indir**, tekrar START basma.
+## Kesinlikle korunacaklar
 
-Kaynak: `diesel-heater-ble 0.3.8`, MIT. Protokolde Mode 2=START/STOP, Mode 0=Auto. Bu kaynak bilgisi tek başına fiziksel RE5011 kabulünü kanıtlamaz.
+- STOP/CLEAR: `AA 00 61 02 FF 00 25 D3` (değişmedi).
+- Hedef +/−: `AA 00 66 01 00 XX CRC` (değişmedi).
+- Hedef sıcaklık **10–40°C**.
+- Canlı telemetri, kısa 8-bayt ACK, CRC16, demo, gerçek cihazda otomatik kontrol kapalı.
+
+## Kurulum ve test
+
+ZIP'teki dosyaları `karavanmasali/webasto-v3` GitHub depo köküne yükle, `.nojekyll` dosyasını silme. Ctrl+Shift+R yapıp başlığın `V3.6 MOD 1 / START TEST` olduğundan emin ol.
+
+1. Isıtıcı tamamen kapanıp soğutma döngüsünü bitirsin; gözetim, havalandırma, CO alarmı hazır olsun.
+2. Bluetooth'a bağlan. Mevcut **Mod 2** ise önce `Otomatik/Sıcaklık moduna dön (0)` düğmesine bas; mod 0 geri okumasını doğrula.
+3. Hedef +1/−1 testini cihazdan doğrula, manuel test onayını ver.
+4. **START (MOD 1 + TEK START)** düğmesine yalnızca bir kere bas.
+5. Sonuç ne olursa olsun **Tanı kayıtlarını indir** dosyasını gönder. Otomatik ikinci START yok. Fiziksel START başarılı olursa gerektiğinde bilinen STOP/CLEAR ile olağan kapanma/soğutma yap. Cihaz tamamen durduğunda mod 0'a geri dön.
+
+Bu test de başarısız olursa rastgele yeni HEX göndermek yerine orijinal HeatGenie uygulamasının gerçek START BLE yazması yakalanmalıdır. Windows'taki sadece 3A00 dinlemesi bu yazmayı göremez.

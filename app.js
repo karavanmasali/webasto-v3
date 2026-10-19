@@ -1,5 +1,5 @@
-import {changeStart,changeStop,updateAuto,safeConfig,clamp,thermostatDecision} from './thermostat.mjs?v=3.5.0';
-import {HeatGenieBLE} from './ble.js?v=3.5.0';
+import {changeStart,changeStop,updateAuto,safeConfig,clamp,thermostatDecision} from './thermostat.mjs?v=3.6.0';
+import {HeatGenieBLE} from './ble.js?v=3.6.0';
 const $=id=>document.getElementById(id);
 const keys=['startMinus','startPlus','stopMinus','stopPlus','targetMinus','targetPlus'];
 let cfg;
@@ -53,8 +53,8 @@ function render(){
  $('connectBtn').disabled=mode==='ble'||busy;
  $('disconnectBtn').disabled=mode!=='ble';
  $('demoBtn').textContent=mode==='demo'?'Demoyu kapat':'Demo aç';
- $('startBtn').disabled=!ready() || busy || (mode==='ble' && (!targetTestConfirmed || ![0,5].includes((actualState??255)&0x0f))) || (mode==='demo' && heater==='on');
- $('restoreModeBtn').disabled=!ready() || busy || mode!=='ble' || ble.runMode!==2 || (actualState!==null && ![0,5].includes(actualState&0x0f)) || Boolean(actualFan||actualPump||actualGlow);
+ $('startBtn').disabled=!ready() || busy || (mode==='ble' && (!targetTestConfirmed || ![0,5].includes((actualState??255)&0x0f) || ble.runMode!==0 || ble.startTried)) || (mode==='demo' && heater==='on');
+ $('restoreModeBtn').disabled=!ready() || busy || mode!=='ble' || ble.runMode===0 || (actualState!==null && ![0,5].includes(actualState&0x0f)) || Boolean(actualFan||actualPump||actualGlow);
  $('stopBtn').disabled=!ready() || busy || (mode==='ble' && (!targetTestConfirmed || [0,5].includes((actualState??255)&0x0f))) || (mode==='demo' && heater==='off');
  $('targetMinus').disabled=!ready() || busy || cfg.auto || (mode==='ble' && (targetOnDevice===null || targetOnDevice<=10));
  $('targetPlus').disabled=!ready() || busy || cfg.auto || (mode==='ble' && (targetOnDevice===null || targetOnDevice>=40));
@@ -63,7 +63,7 @@ function render(){
  $('manualTestArm').disabled=mode!=='ble' || busy;
  $('manualTestStatus').textContent= mode==='ble' ? (manualArmed ? (targetTestConfirmed?'Hedef testi onaylandı. START/STOP tek seferlik manuel testlere açık.':'Önce hedef sıcaklığı +1/−1 deneyip cihazdan geri okumayı doğrula.'):'Gerçek kontrol kilitli. Onay kutusunu işaretle.') : 'Yalnızca Bluetooth bağlantısı kurulduktan sonra manuel test açılabilir.';
  $('readBtn').disabled=mode!=='ble';
- $('modeNotice').innerHTML=mode==='demo'?'<strong>DEMO MODU.</strong> Ekrandaki komutlar sanaldır.':mode==='ble'?'<strong>V3.5 MOD 2 / START Tanılama.</strong> 3A00 gerçek telemetri. Kaynak koddan alınan 3A01 komutları sadece açık onayla gönderilir; otomatik termostat kapalıdır.':'<strong>Gerçek cihaza bağlı değil.</strong> Demo veya Bluetooth tanılama kullan.';
+ $('modeNotice').innerHTML=mode==='demo'?'<strong>DEMO MODU.</strong> Ekrandaki komutlar sanaldır.':mode==='ble'?'<strong>V3.6 MOD 1 / START Tanılama.</strong> 3A00 gerçek telemetri. Kaynak koddan alınan 3A01 komutları sadece açık onayla gönderilir; otomatik termostat kapalıdır.':'<strong>Gerçek cihaza bağlı değil.</strong> Demo veya Bluetooth tanılama kullan.';
  $('freshness').textContent=mode==='demo'?'Demo verisi':mode==='ble'?(lastUpdate?('Gerçek veri · '+(fresh()?'güncel':'eski')):'Paket bekleniyor'):'Veri yok';
  if(mode==='ble') {$('autoToggle').disabled=true;$('autoReason').textContent='Gerçek ısıtıcı için protokol doğrulaması yapılmadı; otomatik kontrol kapalı.';}
  else {$('autoToggle').disabled=(mode!=='demo'); if(!cfg.auto) $('autoReason').textContent='Otomatik mod kapalı.';}
@@ -78,7 +78,7 @@ async function command(what,arg,automatic=false){
      if(what==='target') {targetOnDevice=arg;log('Demo hedef gönderildi: '+arg+' °C');}
      lastUpdate=Date.now();
    } else {
-     const confirmation = what==='restore-mode' ? 'Cihaz tamamen durmuşken eski Otomatik/Sıcaklık modu (0) seçilecek. Onaylıyor musun?' : what==='start' ? 'V3.5 deneyi: Önce HeatGenie START/STOP modu (2) seçilecek, cihazdan doğrulanırsa yalnızca bir START gönderilecek. Bu işlem cihazın çalışma modunu değiştirir. Isıtıcı tamamen kapalı mı, yanında mısın, CO alarmı çalışıyor mu?' : what==='stop' ? 'Bu gerçek STOP/CLEAR denemesidir. Isıtıcının normal soğutmasını gözlemlemelisin. Devam?' : `Gerçek ısıtıcı hedefi ${arg} °C yapılmaya çalışılacak. Onaylıyor musun?`;
+     const confirmation = what==='restore-mode' ? 'Cihaz tamamen durmuşken eski Otomatik/Sıcaklık modu (0) seçilecek. Onaylıyor musun?' : what==='start' ? 'V3.6 deneysel test: MOD 0 üzerinden önce manuel güç MOD 1 seçilecek; cihazdan doğrulanırsa tek 0x61 START gönderilecek. İşlem çalışma modunu değiştirir. Isıtıcı tamamen kapalı mı, havalandırma ve CO alarmı hazır mı, yanında mısın?' : what==='stop' ? 'Bu gerçek STOP/CLEAR denemesidir. Isıtıcının normal soğutmasını gözlemlemelisin. Devam?' : `Gerçek ısıtıcı hedefi ${arg} °C yapılmaya çalışılacak. Onaylıyor musun?`;
      if(!window.confirm(confirmation)){log('Kullanıcı gerçek komutu iptal etti.');return;}
      let result;
      if(what==='start') result=await ble.start();
@@ -87,7 +87,7 @@ async function command(what,arg,automatic=false){
      else if(what==='target') result=await ble.target(arg);
      if(result?.confirmed && what==='target'){targetTestConfirmed=true;cfg.target=arg;save();}
      log(result?.modeVerified===false ? 'SONUÇ START: Mod 2 doğrulanmadı, START paketi gönderilmedi.' : result?.confirmed ? `SONUÇ ${what}: ${what==='target'?'Cihaz ayarı geri okundu':'Durum değişimi algılandı (tam işlem doğrulanmadı)'}.` : `SONUÇ ${what}: 3A01 yazma başarılı, ancak cihaz etkisi DOĞRULANMADI.`);
-     $('lastTestResult').textContent=result?.modeVerified===false?'MOD 2 doğrulanmadı, START gönderilmedi.':result?.confirmed ? `${what.toUpperCase()}: ${what==='target'?'Hedef cihazdan geri okundu':'Cihaz durum değişikliği görüldü'}` : `${what.toUpperCase()}: GATT yazıldı ama cihazda sonuç görülmedi.`;
+     $('lastTestResult').textContent=result?.modeVerified===false?'MOD 1 doğrulanmadı, START gönderilmedi.':result?.confirmed ? `${what.toUpperCase()}: ${what==='target'?'Hedef cihazdan geri okundu':'Cihaz durum değişikliği görüldü'}` : `${what.toUpperCase()}: GATT yazıldı ama cihazda sonuç görülmedi.`;
    }
  } catch(e) { log('Komut başarısız: '+e.message);$('autoReason').textContent=e.message; }
  finally {busy=false;render();}
@@ -148,5 +148,5 @@ setInterval(()=>{
 window.addEventListener('pagehide',()=>{ // Kapandığında otomatik komut garantisi yok; güç kesme uygulanmaz.
  cfg.auto=false;save();
 });
-log('V3.5 deneyi: 0x66 ile START/STOP mod=2; 3A00 üzerinden MOD 2 teyit edilirse tek 0x61 START. Restore: mod=0. STOP ve hedef aynı. Otomatik kontrol kapalı.');
+log('V3.6 deneysel test: MOD 0 → MANUEL MOD 1 (doğrulanacak) → tek 0x61 START. Eski MOD 2 denemesi kaldırıldı. RESTORE=MOD 0. STOP ve hedef komutları değişmedi. Otomatik kapalı.');
 render();

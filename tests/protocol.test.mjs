@@ -31,3 +31,14 @@ test('CRC-CCITT with zero initial value is stable',()=>{
   const p=bytes(packets[1]);
   assert.equal(crc16CcittZero(p.subarray(0,50)),0xD0B4);
 });
+
+
+test('V3.2 gerçek START kaydı: kayıt34 02→01; adım 5 değişmedi',()=>{
+  const before=bytes('AA 09 FF 90 00 00 00 F2 55 00 7E 00 20 03 11 01 68 02 00 00 00 00 00 00 F8 7F F8 7F 00 00 04 40 74 2D 9C FA 00 00 00 00 01 15 02 FF 00 00 00 00 ED F4 0A CB');
+  const after=bytes('AA 09 FF 60 00 00 00 F2 55 00 7E 00 20 03 11 01 68 02 00 00 00 00 00 00 F8 7F F8 7F 00 00 04 40 74 2D 9C FA 00 00 00 00 01 15 01 FF 00 00 00 00 23 14 A9 EF');
+  const a=parseHeatGenieStatus(before), b=parseHeatGenieStatus(after);
+  assert.equal(a.register34,2);assert.equal(b.register34,1);
+  assert.equal(a.stateCode&15,5);assert.equal(b.stateCode&15,5);
+  assert.equal(a.target,21);assert.equal(b.target,21);
+  assert.equal(a.errorFlags,0);assert.equal(b.errorFlags,0);
+});

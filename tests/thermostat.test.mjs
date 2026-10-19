@@ -27,3 +27,11 @@ test('kaybolan bağlantı/arıza komut oluşturmaz',()=>{
  assert.equal(thermostatDecision({cfg,now:1000,running:'off',room:15,isFresh:false,stopSince:null,lastStoppedAt:null,error:false}).command,null);
  assert.equal(thermostatDecision({cfg,now:1000,running:'off',room:15,isFresh:true,stopSince:null,lastStoppedAt:null,error:true}).command,null);
 });
+
+
+test('10–40°C hedef aralığı; START-STOP arası 2°C korundu',()=>{
+  const c=safeConfig({start:38,stop:40,target:40});
+  assert.equal(c.start,38);assert.equal(c.stop,40);assert.equal(c.target,40);
+  const low=safeConfig({start:2,stop:5,target:2});
+  assert.equal(low.start,10);assert.equal(low.stop,12);assert.equal(low.target,10);
+});

@@ -1,24 +1,23 @@
-# Karavan Webasto V3.3 — kontrollü START testi
+# Karavan Webasto V3.4 — START + ACK Tanılama
 
-**Deneysel sürüm.** RE5011 üzerinde gerçek START henüz doğrulanmadı. Fiziksel ısıtıcıyı yalnızca yanında, yeterli havalandırma ve CO alarmı varken test edin. Otomatik termostat Bluetooth bağlantısında kapalıdır. iPhone arka planda güvenilir çalışma sağlamaz.
+**Deneysel sürüm; fiziksel RE5011 START başarısı henüz doğrulanmadı.** Bu sürümün amacı farklı, protokolden alınmış bir START öncesi hazırlık adımını sınamak ve gerçek kısa komut yanıtlarını kaydetmek. Otomatik termostat gerçek cihazda yine kilitlidir. Isıtıcıyı gözetimsiz çalıştırmayın.
 
-## Neler değişti?
-- Hedef sıcaklığı +/− aralığı 10–40°C (HeatGenie kullanıcı kılavuzundaki aralık) ve demo START/STOP sınırları buna uygun.
-- STOP/CLEAR (`AA 00 61 02 FF 00 25 D3`) ve hedef gönderim komutlarının biçimi değiştirilmedi.
-- START testi: **önce sabit sıcaklık modu** (`AA 00 66 00 00 00 19 61`) bir kere gönderiliyor, 3A00 durum raporu gözleniyor, sonra **tek START** (`AA 00 61 01 FF 00 7C 83`) gönderiliyor. Yeni sıra RE5011 donanımında DOĞRULANMADI. Isıtıcı diğer moddaysa veya fan/pompa/kızdırma çalışıyorsa test iptal edilir.
-- Başlatmadan önce/sonra durum adımı ve *kayıt34* değişimi tanılama dosyasında gösteriliyor. Kayıt34 alanının anlamı henüz belirlenmedi.
-- Otomatik tekrar yok; GATT yazma onayı ateşlemenin gerçekleştiği anlamına gelmez.
+## Korunan çalışan özellikler
+- STOP/CLEAR paketinin baytları değiştirilmedi: `AA 00 61 02 FF 00 25 D3`.
+- Hedef +/− komutu değiştirilmedi; aralık **10–40°C**.
+- CRC kontrollü 3A00 telemetri ve 3A01 GATT yazma davranışı korundu.
 
-## GitHub
-ZIP'i çıkarıp tüm dosyaları `karavanmasali/webasto-v3` deponun **köküne** yükle (`Add file` → `Upload files` → `Commit changes`). `main` ve `/(root)` Pages ayarları aynı kalır. `.nojekyll` değişmiyorsa yeniden oluşturma. Sitede Ctrl+Shift+R yap ve başlığın `V3.3 START TEST` olduğunu kontrol et.
+## Yeni kontrollü START deneyi
+- Ön hazırlık: açık kaynak `diesel-heater-ble 0.3.8`, `ProtocolHeatGenie.build_command(1, ...)` kaynaklı `AA 00 65 02 14 1E [CRC]` otomatik durum kayıt isteği. Bu **alternatif bir START komutu değildir**; cihazın kabul edeceği belirsizdir.
+- 1,2 saniye yeni telemetri beklendikten sonra yalnızca bir defa eski START `AA 00 61 01 FF 00 7C 83` gönderilir.
+- Isıtıcı fan, pompa veya kızdırma aktifse veya durum adımı 5/0 dışında ise START gönderilmez. Bağlantı koparsa veya yeni telemetri gelmezse iptal edilir.
+- Gelen 8 baytlık 3A00 yanıtları CRC16 kontrolüyle tanıya ayrı `KISA YANIT` satırı olarak eklenir; GATT onayı veya kısa yanıt ateşlemenin başladığını kanıtlamaz.
+- Tek komut denemesi sonunda 3A00 çalışma adımında `5 → 1` değişimi aranır. Otomatik tekrar, diğer START varyantlarını körlemesine deneme yoktur.
 
-## Deneme
-1. Isıtıcının normal soğutmasını tamamladığını, fan/pompa/kızdırmanın kapalı olduğunu kontrol et. Bluetooth bağlı ve hata kodu sıfır olsun.
-2. Manuel test onayını aç; önce hedef +/− ile bir kez cihazdan geri okuma testini tamamla.
-3. `START (SABİT MOD TEST)` düğmesine **bir kere** bas. Her komut iki ayrı GATT yazması içeren onaylı bir testtir; ekranda ve gerçek cihazda ateşleme başlayıp başlamadığını izle.
-4. Başlamazsa başka deneme yapma. `Tanı kayıtlarını indir` çıktısını paylaş. Başlarsa çalışmasını fiziksel olarak teyit et; STOP/CLEAR ile normal soğutma tamamlat.
+## GitHub'a yükleme
+ZIP'i çıkar. İçindeki dosyaları ve **tests/** klasörünü doğrudan GitHub `karavanmasali/webasto-v3` deposunun ana dizinine yükle. .nojekyll gizli dosyasını yeniden yaratmana gerek yok; GitHub'da zaten varsa koru. GitHub Pages sayfasını açınca Ctrl+Shift+R yap ve **V3.4 START / ACK TEST** başlığını kontrol et.
 
-## Kanıt ve sınırlar
-Önceki V3.2 kaydında 20:55:08'de START GATT yazması başarılıydı, ama cihazın durum adımı 5'te kalmıştı; durum paketinde ham kayıt34 02→01 değişmişti. Bu alan için protokol belgesi anlam belirtmiyor. Bu nedenle "START kabul edildi" veya "başlatma düzeldi" sonucunu peşinen iddia etmiyoruz.
+## Test
+Tam soğutma bittikten sonra Windows 11 Chrome'dan bağlan, manuel onay kutusunu işaretle, bir kez +/− hedef testiyle cihaz dönüşünü doğrula; ardından **START (KAYIT + TEK START)** düğmesine sadece bir kez bas. Isıtıcının yanında kal, normal ateşlemeyi gözlemle. Başlarsa ve test tamamlanırsa orijinal kumanda veya çalışan STOP/CLEAR ile normal soğut. Başlamazsa `Tanı kayıtlarını indir` dosyasını paylaş. Daha fazla START komutu gönderme.
 
-Komut profili: `diesel-heater-ble 0.3.8 / ProtocolHeatGenie`, MIT (LICENSE-THIRD-PARTY.txt). HeatGenie 10–40°C limit kaynağı: https://www.dieselheat.com.au/dieselheat-2-2kw-air-heatgenie-app-user-guide/
+Komut kaynağı: kullanıcıca sağlanan `diesel-heater-ble 0.3.8` kaynak paketi, MIT lisanslıdır.

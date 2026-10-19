@@ -1,35 +1,22 @@
-# Karavan Webasto V3.8 — DİZİ C TEK START
+# Karavan Webasto V3.9 — OTOMATİK TERMOSTAT (gerçek cihaz testi)
 
-**Cihaz START'ı için seçilen yöntem kullanıcı tarafından bağımsız RE5011 START aracıyla fiziksel olarak başarılı bildirilmiştir. V3.8 web uygulamasında çalışma henüz ayrıca doğrulanmadı.**
+V3.8 üzerine eklenenler:
+- **Gerçek cihazda otomatik START/STOP** (`auto-engine.mjs`). iOS uygulamasındaki motorla aynı mantık: oda ≥ STOP → (gecikme sonrası) STOP; oda ≤ START → START.
+- Yeniden başlatma beklemesi, saatlik START sınırı (4), etkisiz START'ta en çok 2 deneme, etkisiz STOP'ta 60 sn arayla 3 tekrar.
+- Otomatik mod kendini kapatır: hata bayrağı, Fahrenheit, iki başarısız START, yeniden bağlanma süresi aşımı.
+- **STOP artık hiçbir koşula bağlı değil**: hedef testi, hata bayrağı ve telemetri tazeliği STOP'u engellemez; doğrulama beklenirken de STOP gönderilebilir.
+- **Art arda START**: tek bağlantıda kilit yok (60 sn koruması var). 0x41 "TEKRAR KOMUT" yanıtı gelirse sonraki START'ta B4 ±1 kaydırılır (DOĞRULANMAMIŞ varsayım; kayıttaki `0x41 ACK` satırlarına bak).
+- **Otomatik yeniden bağlanma** (en çok 10 dk, kullanıcı hareketi gerekmez), telemetri 20 sn gelmezse salt-okunur durum isteği.
+- Bildirim (izin verilirse), ekran uyku kilidi (otomatik açıkken).
 
-## Kullanıcı tarafından başarılı olduğu bildirilen yöntemin programa entegrasyonu
+## Test (Windows / Chrome)
+1. Dosyaları GitHub Pages deposunun köküne yükle, `Ctrl+Shift+R` ile yenile; başlık `V3.9` olmalı.
+2. Bağlan → manuel test onay kutusu → hedef +/− ile bir derece değiştirip geri okumayı doğrula.
+3. Önce **manuel** START ve STOP'u dene (adım 5→1, soğutma).
+4. START/STOP eşiklerini odanın hemen üstüne/altına getirip **Otomatik termostat**'ı aç; kayıtta `OTOMATİK KARAR` satırlarını izle.
+5. START → STOP → START döngüsünde `0x41 ACK` durumuna bak (TEKRAR KOMUT çıkıyor mu?).
+6. Bluetooth'u (ısıtıcı kapsama alanı dışına çıkarak ya da kısa süre) kesip yeniden bağlanmayı dene.
+7. Tanı kaydını indirip paylaş.
 
-- Referans kaynak: kullanıcının gönderdiği `re5011_start_test.html`, Dizi C (`btnSeqC`, satır 208): `build(0x61,0x01,tgt(),0x00)`.
-- START (Dizi C) = `AA 00 61 01 [B4=sıcaklık, 10..40] 00 [CRC-H] [CRC-L]`.
-- B4 **tarayıcıdaki eski bir sayıdan değil**, güncel ve CRC'si doğrulanmış **3A00 telemetrisindeki hedef sıcaklıktan** alınır. Böylece 10–40°C aralığı geçerlidir.
-- 22°C örneği: `AA 00 61 01 16 00 D6 A9`.
-- 23°C örneği: `AA 00 61 01 17 00 E5 98`.
-- 25°C örneği: `AA 00 61 01 19 00 C6 97`.
-- 0x41 komut kabul yanıtında B4 eşleşmesi kontrol edilir. Nihai fiziksel başarı `Adım 5→1` veya başka gerçek çalışma adımı ve fan/kızdırma gibi cihaz aktivitesiyle değerlendirilir. GATT yazma sonucu tek başına yeterli değildir.
-- Otomatik tekrar yok. MOD 0 korunur, MOD 1 ve MOD 2'ye gizlice geçilmez.
-
-## Değiştirilmeyen fonksiyonlar
-
-- STOP/CLEAR aynen: `AA 00 61 02 FF 00 25 D3`.
-- Hedef sıcaklık +/− aynen: `0x66 0x01 0x00 [hedef]`, 10–40°C, cihazdan geri okuma onayı.
-- Hata/CRC/kapanma güvenliği, tek START/bağlantı, manuel onay.
-- Gerçek cihaz otomatik termostatı **henüz açılmadı**. Önce V3.8 fiziksel START+STOP denemesi ve soğutma davranışı doğrulanmalı.
-
-## GitHub Pages'e kurulum
-
-ZIP içindeki dosyaları `karavanmasali/webasto-v3` deposunun **köküne** yükle ve `Commit changes` yap. Mevcut `.nojekyll` dosyasını silme. Ardından `https://karavanmasali.github.io/webasto-v3/` adresini Windows Chrome'da `Ctrl+Shift+R` ile yenile. Başlık `V3.8 DİZİ C START` olmalı.
-
-## Gerçek cihazda tek kontrol
-
-1. Isıtıcı tamamen durmuş olsun; soğutma tamamlanmış olsun. Ortam havalandırması ve çalışan CO alarmı sağla.
-2. Bluetooth bağlantısı kur, cihaz MOD 0 (sıcaklık) değilse tamamen durmuşken `Otomatik/Sıcaklık moduna dön (0)` düğmesini kullan.
-3. Manuel testi onayla, hedefi 1°C değiştirip cihazdan geri okuma ile doğrula (istersen tekrar 22°C'ye ayarla).
-4. `START (DİZİ C · HEDEF + TEK START)` düğmesine **bir defa** bas. Yanında fan/kızdırma ve çalışma adımını gözle.
-5. Tanı kaydını indir ve paylaş. Otomatik ikinci START yapma.
-
-Bu sürüm kullanıcı tarafından doğrulandığı bildirilen Dizi C'nin entegrasyonudur; yazılım testleri fiziksel ısıtıcı testinin yerini tutmaz.
+Sınırlar: tarayıcı sekmesi ve bilgisayar açık kalmalı; bilgisayar uykuya geçerse otomatik kontrol durur. Oda sıcaklığı ısıtıcının verdiği değerdir.
+CO alarmı, havalandırma ve cihaz başında gözetim olmadan otomatik mod kullanma.

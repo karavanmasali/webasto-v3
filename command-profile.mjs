@@ -1,10 +1,10 @@
 /**
  * HeatGenie/Boygu command format based on diesel-heater-ble 0.3.8,
  * ProtocolHeatGenie.build_command() under MIT license.
- * V3.8 START B4=target °C is based on user-reported physically successful RE5011 Dizi C test.
+ * V3.9 START B4=target °C is based on user-reported physically successful RE5011 Dizi C test.
  * Copyright (c) 2024 Spettacolo83 (original Python library).
  */
-import {crc16CcittZero} from './protocol.mjs?v=3.8.0';
+import {crc16CcittZero} from './protocol.mjs?v=3.9.0';
 export const commandProfile = Object.freeze({
   source: 'User-tested RE5011 Dizi C from re5011_start_test.html; CRC16/XMODEM',
   hardwareVerified: false,

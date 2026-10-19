@@ -1,6 +1,6 @@
 /** HeatGenie RE5011 BLE — supervised/manual diagnostics ONLY. */
-import {HEATGENIE_SERVICE, HEATGENIE_READ_CHAR, HEATGENIE_WRITE_CHAR, parseHeatGenieStatus, crc16CcittZero} from './protocol.mjs?v=3.8.0';
-import {guardedBuild,hexBytes} from './command-profile.mjs?v=3.8.0';
+import {HEATGENIE_SERVICE, HEATGENIE_READ_CHAR, HEATGENIE_WRITE_CHAR, parseHeatGenieStatus, crc16CcittZero} from './protocol.mjs?v=3.9.0';
+import {guardedBuild,hexBytes} from './command-profile.mjs?v=3.9.0';
 const bufferHex = data => hexBytes(new Uint8Array(data.buffer ?? data, data.byteOffset ?? 0, data.byteLength ?? undefined));
 export const runningStep = status => status.stateCode & 0x0f;
 export const isOffStep = status => [0,5].includes(runningStep(status));
@@ -10,6 +10,8 @@ export class HeatGenieBLE {
     this.device=null;this.server=null;this.chars=[];this.writeChar=null;
     this.lastVerifiedStatus=null;this.lastStatusAt=0;
     this.connected=false;this.writePending=false;this.waiter=null;this.startTried=false;this.powerAck=null;
+    this.lastStartAt=0;this.lastStartB4=null;this.repeatSeen=false;this.userDisconnect=false;this.reconnecting=false;
+    this.onReconnect=()=>{};this.onGiveUp=()=>{};
   }
   process(data, source) {
     this.onLog(`${source}: ${bufferHex(data)}`);
@@ -28,6 +30,7 @@ export class HeatGenieBLE {
           const code=raw[3], echoedB4=raw[4];
           const label=code===0?'KOMUT KABUL YANITI':code===1?'TEKRAR KOMUT':'KOMUT BAŞARISIZ / BİLİNMEYEN';
           this.onLog(`HEATGENIE 0x41 ACK: durum=${code} (${label}), B4=${echoedB4}${this.powerAck ? ', beklenen B4='+this.powerAck.b4 : ''}.`);
+          if (code===1 && this.lastStartB4!==null && echoedB4===this.lastStartB4) this.repeatSeen=true;
           if (this.powerAck && echoedB4===this.powerAck.b4) {
             this.powerAck.responseCode=code;
             this.onLog(code===0?'START B4 yanıtı eşleşti. Fiziksel ateşleme ayrıca durum adımıyla doğrulanır.':'START B4 yanıtı eşleşti fakat cihaz olumlu yanıt vermedi.');
@@ -48,16 +51,43 @@ export class HeatGenieBLE {
     const w=this.waiter;this.waiter=null;clearTimeout(w.timer);w.resolve(confirmed);
   }
   onLost() {
-    this.connected=false;this.chars=[];this.writeChar=null;this.lastVerifiedStatus=null;this.lastStatusAt=0;this.startTried=false;this.powerAck=null;
-    this.completeWaiter(false);this.onLog('Bluetooth bağlantısı kesildi. Manuel test durduruldu.');this.onDisconnect();
+    this.connected=false;this.chars=[];this.writeChar=null;this.lastVerifiedStatus=null;this.lastStatusAt=0;this.powerAck=null;
+    this.completeWaiter(false);
+    if(this.reconnecting)return; // yeniden bağlanma döngüsü zaten sürüyor
+    const willReconnect=!this.userDisconnect && !!this.device;
+    this.onLog(willReconnect?'Bluetooth bağlantısı kesildi. Otomatik yeniden bağlanma denenecek (en çok 10 dk).':'Bluetooth bağlantısı kesildi.');
+    this.onDisconnect(willReconnect);
+    if(willReconnect){this.reconnecting=true;this.reconnectLoop();}
+  }
+  async reconnectLoop() {
+    const started=Date.now();
+    while(this.reconnecting && Date.now()-started<10*60*1000){
+      await new Promise(r=>setTimeout(r,4000));
+      if(!this.reconnecting)return;
+      try{
+        this.server=await this.device.gatt.connect();this.connected=true;
+        await this.setupServices();
+        this.reconnecting=false;this.onLog('Yeniden bağlandı.');this.onReconnect();return;
+      }catch(e){
+        this.connected=false;this.onLog('Yeniden bağlanma başarısız: '+e.message);
+        try{this.device.gatt.disconnect();}catch{}
+      }
+    }
+    if(this.reconnecting){this.reconnecting=false;this.onLog('Yeniden bağlanma süresi doldu.');this.onGiveUp();}
   }
   async connect() {
     if(!navigator.bluetooth)throw new Error('Web Bluetooth için Windows Chrome/Edge kullan.');
     const device=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[HEATGENIE_SERVICE]});
-    this.device=device;
+    this.device=device;this.userDisconnect=false;this.reconnecting=false;
     device.addEventListener('gattserverdisconnected',()=>this.onLost());
     this.server=await device.gatt.connect();this.connected=true;
     try {
+      await this.setupServices();
+      return device.name||'Bluetooth cihazı';
+    }catch(e){this.disconnect();throw e;}
+  }
+  async setupServices() {
+    {
       const svc=await this.server.getPrimaryService(HEATGENIE_SERVICE);
       const chars=await svc.getCharacteristics();this.chars=chars;
       this.writeChar=chars.find(ch=>ch.uuid.toLowerCase()===HEATGENIE_WRITE_CHAR && ch.properties.write)??null;
@@ -73,29 +103,37 @@ export class HeatGenieBLE {
         }
       }
       if(!this.writeChar)this.onLog('UYARI: 3A01 yazma karakteristiği yok; manuel test kilitli.');
-      return device.name||'Bluetooth cihazı';
-    }catch(e){this.disconnect();throw e;}
+    }
   }
   async read(){
     const ch=this.chars.find(x=>x.uuid.toLowerCase()===HEATGENIE_READ_CHAR && x.properties.read);
     if(ch){try{this.process(await ch.readValue(),`OKUMA ${ch.uuid}`);}catch(e){this.onLog(`Okuma hatası: ${e.message}`);}}
   }
   disconnect(){
+    this.userDisconnect=true;this.reconnecting=false;
     if(this.device?.gatt?.connected)this.device.gatt.disconnect();
     this.connected=false;this.chars=[];this.writeChar=null;this.lastVerifiedStatus=null;this.lastStatusAt=0;this.startTried=false;this.powerAck=null;this.completeWaiter(false);
+  }
+  /** STOP için telemetri tazeliği veya hata bayrağı aranmaz: yalnızca bağlantı ve 3A01 yeterlidir. */
+  get canStop() { return this.connected && !!this.writeChar; }
+  async requestStatus() {
+    if(!this.connected||!this.writeChar)return;
+    try{await this.writeChar.writeValueWithResponse(guardedBuild('auto-update'));this.onLog('Salt-okunur durum isteği gönderildi (telemetri gecikti).');}
+    catch(e){this.onLog('Durum isteği hatası: '+e.message);}
   }
   get canControl() {
     return this.connected && !!this.writeChar && !!this.lastVerifiedStatus &&
       Date.now()-this.lastStatusAt < 6000 && !this.writePending;
   }
   async sendCommand(operation,value){
-    if(!this.canControl)throw new Error('Güncel ve doğrulanmış telemetri veya 3A01 bağlantısı yok.');
-    if(this.writePending)throw new Error('Önceki komut henüz tamamlanmadı.');
-    if(this.lastVerifiedStatus.errorFlags)throw new Error('Cihazda hata bayrağı var. Orijinal kontrol panelinden kontrol edin.');
+    if(operation==='stop'){ if(!this.canStop)throw new Error('STOP için Bluetooth/3A01 bağlantısı yok.'); if(this.waiter)this.completeWaiter(false); }
+    else if(!this.canControl)throw new Error('Güncel ve doğrulanmış telemetri veya 3A01 bağlantısı yok.');
+    if(this.writePending && operation!=='stop')throw new Error('Önceki komut henüz tamamlanmadı.');
+    if(operation!=='stop' && this.lastVerifiedStatus.errorFlags)throw new Error('Cihazda hata bayrağı var. Orijinal kontrol panelinden kontrol edin.');
     if(operation==='target' && (this.lastVerifiedStatus.flags & 0x10))throw new Error('Cihaz Fahrenheit modunda; Celsius hedef komutu göndermeyeceğiz.');
-    const old=this.lastVerifiedStatus;
+    const old=this.lastVerifiedStatus ?? {stateCode:0x0f,flags:0,target:0,register34:0,errorFlags:0}; // STOP, telemetri olmadan da gidebilir
     if(operation==='start' && !isOffStep(old))throw new Error('START için cihazın kapalı/bekleme halinde olması gerekiyor.');
-    if(operation==='stop' && isOffStep(old))throw new Error('STOP için cihaz zaten kapalı/bekleme durumunda görünüyor.');
+    if(operation==='stop' && isOffStep(old) && Date.now()-this.lastStartAt>90000)throw new Error('STOP için cihaz zaten kapalı/bekleme durumunda görünüyor.');
     if(operation==='target' && old.target===value)throw new Error(`Cihaz zaten ${value} °C hedefte.`);
     let startTarget;
     if(operation==='start') {
@@ -104,8 +142,11 @@ export class HeatGenieBLE {
       startTarget=old.target;
       if(!Number.isInteger(startTarget) || startTarget<10 || startTarget>40)
         throw new Error('START için cihazdan doğrulanmış 10–40 °C hedef değeri gerekli.');
+      // DOĞRULANMAMIŞ varsayım: B4 tekrar-koruması (nonce) olabilir. Cihaz önceki START'a 'TEKRAR KOMUT' (0x41, durum=1) dediyse B4'ü ±1 kaydır.
+      if(this.repeatSeen && this.lastStartB4===startTarget){startTarget=startTarget<40?startTarget+1:startTarget-1;this.onLog('Önceki START tekrar komut yanıtı aldı; bu sefer B4='+startTarget+' kullanılıyor.');}
+      this.repeatSeen=false;this.lastStartB4=startTarget;this.lastStartAt=Date.now();
       this.powerAck={b4:startTarget,responseCode:null};
-      this.onLog(`V3.8 DİZİ C: START B4=hedef ${startTarget} °C (0x${startTarget.toString(16).padStart(2,'0').toUpperCase()}), B5=00; CRC hesaplanıyor. Mod değiştirilmez.`);
+      this.onLog(`V3.9 DİZİ C: START B4=hedef ${startTarget} °C (0x${startTarget.toString(16).padStart(2,'0').toUpperCase()}), B5=00; CRC hesaplanıyor. Mod değiştirilmez.`);
     }
     const bytes=guardedBuild(operation,operation==='start'?startTarget:value);
     this.writePending=true;
@@ -114,6 +155,7 @@ export class HeatGenieBLE {
       // RE5011 reports write=true, writeWithoutResponse=false. Do not force no-response.
       await this.writeChar.writeValueWithResponse(bytes);
       this.onLog(`3A01 GATT yazma yanıtı alındı (${operation}). Bu, ısıtıcının komutu UYGULADIĞINI kanıtlamaz.`);
+      this.writePending=false; // doğrulama beklerken STOP engellenmesin
       let predicate;
       if(operation==='target')predicate=s=>s.target===value;
       else if(operation==='start')predicate=s=>!isOffStep(s) && !s.errorFlags;
@@ -170,24 +212,23 @@ export class HeatGenieBLE {
       return confirmed;
     } finally {this.writePending=false;}
   }
-  /** V3.8: User-confirmed Dizi C from the standalone RE5011 test tool.
+  /** V3.9: User-confirmed Dizi C from the standalone RE5011 test tool.
    * START only when off, in MODE 0, with fresh CRC-verified temperature.
    * Sends 0x61 0x01 <device target 10..40> 0x00, one time.
    */
   async startWithTemperatureB4(){
-    if(this.startTried)throw new Error('Bu bağlantıda START zaten denendi. Tanı kaydını indir; otomatik ikinci deneme yapılmaz.');
+    if(Date.now()-this.lastStartAt<60000)throw new Error('Son START 60 sn içinde gönderildi; tekrar START bekletiliyor.');
     if(!this.canControl)throw new Error('START için güncel BLE telemetrisi gerekli.');
     const initial=this.lastVerifiedStatus;
     if(initial.errorFlags)throw new Error('Cihaz hata bildiriyor; START gönderilmiyor.');
     if(!isOffStep(initial) || initial.fan || initial.pump || initial.glow)
       throw new Error('START yalnızca cihaz tamamen durmuşken denenebilir.');
     if(this.runMode!==0)throw new Error(`Cihaz MOD ${this.runMode}. Önce tamamen durmuş cihazı “Otomatik/Sıcaklık moduna dön (0)” ile MOD 0 yap.`);
-    this.startTried=true;
-    this.onLog('V3.8: Kullanıcının çalıştırdığı Dizi C seçildi. MOD 0 korunur; güncel hedef B4 ile TEK 0x61 START gönderilir.');
+    this.onLog('V3.9: Kullanıcının çalıştırdığı Dizi C seçildi. MOD 0 korunur; güncel hedef B4 ile TEK 0x61 START gönderilir.');
     return this.sendCommand('start');
   }
   async restoreTemperatureMode(){
-    this.onLog('V3.8: Kullanıcı isteğiyle çalışma modu 0 (sıcaklık) geri seçiliyor.');
+    this.onLog('V3.9: Kullanıcı isteğiyle çalışma modu 0 (sıcaklık) geri seçiliyor.');
     return this.writeMode(0);
   }
   async start(){return this.startWithTemperatureB4();}

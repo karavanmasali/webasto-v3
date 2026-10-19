@@ -1,5 +1,6 @@
-import {changeStart,changeStop,updateAuto,safeConfig,clamp,thermostatDecision} from './thermostat.mjs?v=3.8.0';
-import {HeatGenieBLE} from './ble.js?v=3.8.0';
+import {changeStart,changeStop,updateAuto,safeConfig,clamp,thermostatDecision} from './thermostat.mjs?v=3.9.0';
+import {HeatGenieBLE} from './ble.js?v=3.9.0';
+import {AutoEngine} from './auto-engine.mjs?v=3.9.0';
 const $=id=>document.getElementById(id);
 const keys=['startMinus','startPlus','stopMinus','stopPlus','targetMinus','targetPlus'];
 let cfg;
@@ -16,8 +17,13 @@ let stopSince=null, lastStoppedAt=null, sent=false, busy=false, error=false;
 let lastUpdate=0;
 let logs=[];
 const log=(msg)=>{logs.push(`[${new Date().toLocaleTimeString('tr-TR')}] ${msg}`);logs=logs.slice(-300);$('logOutput').textContent=logs.join('\n');};
+const engine=new AutoEngine();
+let targetSyncTries=0,lastTargetSentAt=0,wakeLock=null;
 const ble = new HeatGenieBLE(log,
-  ()=>{mode='none';heater='unknown';manualArmed=false;targetTestConfirmed=false;cfg.auto=false;stopSince=null;lastUpdate=0;save();render();},
+  (willReconnect)=>{
+    lastUpdate=0;
+    if(willReconnect){heater='unknown';if(cfg.auto){$('autoReason').textContent='Bağlantı koptu, yeniden bağlanılıyor… (otomatik kontrol çalışmıyor)';notify('Bluetooth bağlantısı koptu. Otomatik kontrol çalışmıyor; ısıtıcı kendi ayarıyla çalışır.');}render();return;}
+    mode='none';heater='unknown';manualArmed=false;targetTestConfirmed=false;cfg.auto=false;engine.reset();releaseWake();stopSince=null;save();render();},
   status=>{
     actualRoom=status.roomTemp;
     caseTemp=status.caseTemp;
@@ -30,7 +36,10 @@ const ble = new HeatGenieBLE(log,
     actualError=status.errorFlags;
     lastUpdate=Date.now();
     render();
+    autoStep(status);
   });
+ble.onReconnect=()=>{log('Yeniden bağlandı; telemetri bekleniyor.');render();};
+ble.onGiveUp=()=>{mode='none';heater='unknown';manualArmed=false;cfg.auto=false;engine.reset();releaseWake();save();notify('Yeniden bağlanılamadı; otomatik kontrol kapatıldı. Isıtıcıyı kontrol edin.');render();};
 const save=()=>{localStorage.setItem('webasto-v3',JSON.stringify(cfg));};
 const fresh=()=>mode==='demo' || (mode==='ble' && Date.now()-lastUpdate<20000);
 const ready=()=>mode==='demo' || (mode==='ble' && manualArmed && ble.canControl && fresh());
@@ -53,9 +62,9 @@ function render(){
  $('connectBtn').disabled=mode==='ble'||busy;
  $('disconnectBtn').disabled=mode!=='ble';
  $('demoBtn').textContent=mode==='demo'?'Demoyu kapat':'Demo aç';
- $('startBtn').disabled=!ready() || busy || (mode==='ble' && (!targetTestConfirmed || ![0,5].includes((actualState??255)&0x0f) || ble.runMode!==0 || ble.startTried)) || (mode==='demo' && heater==='on');
+ $('startBtn').disabled=!ready() || busy || (mode==='ble' && (!targetTestConfirmed || ![0,5].includes((actualState??255)&0x0f) || ble.runMode!==0 || (Date.now()-ble.lastStartAt<60000))) || (mode==='demo' && heater==='on');
  $('restoreModeBtn').disabled=!ready() || busy || mode!=='ble' || ble.runMode===0 || (actualState!==null && ![0,5].includes(actualState&0x0f)) || Boolean(actualFan||actualPump||actualGlow);
- $('stopBtn').disabled=!ready() || busy || (mode==='ble' && (!targetTestConfirmed || [0,5].includes((actualState??255)&0x0f))) || (mode==='demo' && heater==='off');
+ $('stopBtn').disabled=mode==='ble' ? (!ble.canStop || (actualState!==null && [0,5].includes(actualState&0x0f) && Date.now()-ble.lastStartAt>90000)) : (!ready() || busy || mode!=='demo' || heater==='off'); // STOP gerçek cihazda hedef testi, hata bayrağı veya telemetri tazeliğine bağlı değildir
  $('targetMinus').disabled=!ready() || busy || cfg.auto || (mode==='ble' && (targetOnDevice===null || targetOnDevice<=10));
  $('targetPlus').disabled=!ready() || busy || cfg.auto || (mode==='ble' && (targetOnDevice===null || targetOnDevice>=40));
  $('leaveBtn').disabled=mode!=='demo' || busy; // Karavandan ayrıldım otomatik komutu bu test sürümünde gerçek cihazda KAPALI
@@ -63,13 +72,14 @@ function render(){
  $('manualTestArm').disabled=mode!=='ble' || busy;
  $('manualTestStatus').textContent= mode==='ble' ? (manualArmed ? (targetTestConfirmed?'Hedef testi onaylandı. START/STOP tek seferlik manuel testlere açık.':'Önce hedef sıcaklığı +1/−1 deneyip cihazdan geri okumayı doğrula.'):'Gerçek kontrol kilitli. Onay kutusunu işaretle.') : 'Yalnızca Bluetooth bağlantısı kurulduktan sonra manuel test açılabilir.';
  $('readBtn').disabled=mode!=='ble';
- $('modeNotice').innerHTML=mode==='demo'?'<strong>DEMO MODU.</strong> Ekrandaki komutlar sanaldır.':mode==='ble'?'<strong>V3.8 DİZİ C START.</strong> Kullanıcının çalıştırdığı C yöntemi: cihazın güncel hedefi B4 alanında, CRC otomatik. STOP/HEDEF korunur; otomatik termostat cihazda henüz kapalıdır.':'<strong>Gerçek cihaza bağlı değil.</strong> Demo veya Bluetooth tanılama kullan.';
+ $('modeNotice').innerHTML=mode==='demo'?'<strong>DEMO MODU.</strong> Ekrandaki komutlar sanaldır.':mode==='ble'?'<strong>V3.9 OTOMATİK TERMOSTAT.</strong> Gerçek cihazda otomatik START/STOP test edilebilir (onay kutusu + açık onay gerekir). Sayfa ve bilgisayar açık, Chrome ekranı uyumasın.':'<strong>Gerçek cihaza bağlı değil.</strong> Demo veya Bluetooth tanılama kullan.';
  $('freshness').textContent=mode==='demo'?'Demo verisi':mode==='ble'?(lastUpdate?('Gerçek veri · '+(fresh()?'güncel':'eski')):'Paket bekleniyor'):'Veri yok';
- if(mode==='ble') {$('autoToggle').disabled=true;$('autoReason').textContent='Gerçek ısıtıcı için protokol doğrulaması yapılmadı; otomatik kontrol kapalı.';}
+ if(mode==='ble') {$('autoToggle').disabled=!manualArmed||busy||!(ble.connected||ble.reconnecting);if(!cfg.auto)$('autoReason').textContent=manualArmed?'Otomatik mod kapalı.':'Otomatik mod için önce manuel test onay kutusunu işaretle.';}
  else {$('autoToggle').disabled=(mode!=='demo'); if(!cfg.auto) $('autoReason').textContent='Otomatik mod kapalı.';}
 }
 async function command(what,arg,automatic=false){
- if(!ready() || busy) {log('Komut reddedildi: Gerçek kontrol hazır değil.');return;}
+ const stopLive=(what==='stop'&&mode==='ble');
+ if(stopLive?!ble.canStop:(!ready() || busy)) {log('Komut reddedildi: Gerçek kontrol hazır değil.');return;}
  busy=true;render();
  try {
    if(mode==='demo') {
@@ -78,7 +88,7 @@ async function command(what,arg,automatic=false){
      if(what==='target') {targetOnDevice=arg;log('Demo hedef gönderildi: '+arg+' °C');}
      lastUpdate=Date.now();
    } else {
-     const confirmation = what==='restore-mode' ? 'Cihaz tamamen durmuşken eski Otomatik/Sıcaklık modu (0) seçilecek. Onaylıyor musun?' : what==='start' ? `V3.8 Dizi C START: MOD 0 korunacak, cihazın güncel hedefi ${targetOnDevice} °C B4 alanında gönderilecek (CRC otomatik). Yalnızca TEK komut. Cihaz durmuş, havalandırma ve CO alarmı hazır, sen yanında mısın?` : what==='stop' ? 'Bu gerçek STOP/CLEAR denemesidir. Isıtıcının normal soğutmasını gözlemlemelisin. Devam?' : `Gerçek ısıtıcı hedefi ${arg} °C yapılmaya çalışılacak. Onaylıyor musun?`;
+     const confirmation = what==='restore-mode' ? 'Cihaz tamamen durmuşken eski Otomatik/Sıcaklık modu (0) seçilecek. Onaylıyor musun?' : what==='start' ? `V3.9 Dizi C START: MOD 0 korunacak, cihazın güncel hedefi ${targetOnDevice} °C B4 alanında gönderilecek (CRC otomatik). Yalnızca TEK komut. Cihaz durmuş, havalandırma ve CO alarmı hazır, sen yanında mısın?` : what==='stop' ? 'Bu gerçek STOP/CLEAR denemesidir. Isıtıcının normal soğutmasını gözlemlemelisin. Devam?' : `Gerçek ısıtıcı hedefi ${arg} °C yapılmaya çalışılacak. Onaylıyor musun?`;
      if(!window.confirm(confirmation)){log('Kullanıcı gerçek komutu iptal etti.');return;}
      let result;
      if(what==='start') result=await ble.start();
@@ -95,13 +105,22 @@ async function command(what,arg,automatic=false){
 const changeSettings=(update)=>{cfg=update(cfg);save();stopSince=null;render();};
 $('startMinus').onclick=()=>changeSettings(c=>changeStart(c,-1));
 $('startPlus').onclick=()=>changeSettings(c=>changeStart(c,1));
-$('stopMinus').onclick=()=>{changeSettings(c=>changeStop(c,-1));if(cfg.auto) command('target',cfg.target);};
-$('stopPlus').onclick=()=>{changeSettings(c=>changeStop(c,1));if(cfg.auto) command('target',cfg.target);};
+$('stopMinus').onclick=()=>{changeSettings(c=>changeStop(c,-1));if(cfg.auto){if(mode==='demo')command('target',cfg.target);else targetSyncTries=0;}};
+$('stopPlus').onclick=()=>{changeSettings(c=>changeStop(c,1));if(cfg.auto){if(mode==='demo')command('target',cfg.target);else targetSyncTries=0;}};
 $('targetMinus').onclick=()=>{const next=clamp((mode==='ble'?targetOnDevice:cfg.target)-1,10,40);if(mode==='demo'){cfg.target=next;save();}render();command('target',next);};
 $('targetPlus').onclick=()=>{const next=clamp((mode==='ble'?targetOnDevice:cfg.target)+1,10,40);if(mode==='demo'){cfg.target=next;save();}render();command('target',next);};
 $('stopDelay').onchange=e=>changeSettings(c=>({...c,stopDelay:Number(e.target.value)}));
 $('restartDelay').onchange=e=>changeSettings(c=>({...c,restartDelay:Number(e.target.value)}));
-$('autoToggle').onchange=e=>{
+$('autoToggle').onchange=async e=>{
+ if(mode==='ble'){
+  if(e.target.checked){
+   if(!manualArmed){e.target.checked=false;log('Önce manuel test onay kutusunu işaretle.');return;}
+   if(!window.confirm(`OTOMATİK KONTROL: Oda ≥ ${cfg.stop} °C olunca STOP, ≤ ${cfg.start} °C olunca START gönderilecek. Isıtıcı sen yokken kendiliğinden açılıp kapanabilir. Çalışan CO alarmı, havalandırma ve cihaz güvenliği sende olmalı. Etkinleştirilsin mi?`)){e.target.checked=false;return;}
+   requestNotify();await requestWake();
+   cfg=updateAuto(cfg,true);engine.reset();targetSyncTries=0;save();log('Otomatik termostat AÇILDI (gerçek cihaz).');
+  } else {cfg=updateAuto(cfg,false);engine.reset();releaseWake();save();log('Otomatik termostat KAPATILDI.');}
+  render();return;
+ }
  if(mode!=='demo') {e.target.checked=false;return;}
  changeSettings(c=>updateAuto(c,e.target.checked));
  if(cfg.auto)command('target',cfg.stop); // STOP ile HeatGenie hedefini eşitle.
@@ -126,12 +145,56 @@ $('connectBtn').onclick=async()=>{
  catch(e){mode='none';log('Bağlantı hatası: '+e.message);alert('Bluetooth bağlantısı kurulamadı: '+e.message);}
  busy=false;render();
 };
-$('disconnectBtn').onclick=()=>{manualArmed=false;targetTestConfirmed=false;cfg.auto=false;save();ble.disconnect();mode='none';heater='unknown';render();};
+$('disconnectBtn').onclick=()=>{manualArmed=false;targetTestConfirmed=false;cfg.auto=false;engine.reset();releaseWake();save();ble.disconnect();mode='none';heater='unknown';render();};
 $('readBtn').onclick=()=>ble.read();
 $('exportBtn').onclick=()=>{
  const blob=new Blob([logs.join('\n')],{type:'text/plain;charset=utf-8'});
  const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='webasto-v3-tani.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 };
+/* ---------- V3.9 gerçek cihaz otomatik termostat ---------- */
+function notify(msg){
+  log('UYARI: '+msg);
+  document.title='⚠ '+msg.slice(0,40);
+  try{if('Notification' in window && Notification.permission==='granted')new Notification('Webasto',{body:msg});}catch{}
+}
+function requestNotify(){try{if('Notification' in window && Notification.permission==='default')Notification.requestPermission();}catch{}}
+async function requestWake(){try{if(navigator.wakeLock&&!wakeLock){wakeLock=await navigator.wakeLock.request('screen');wakeLock.addEventListener('release',()=>{wakeLock=null;});log('Ekran uyku kilidi alındı (bilgisayar ekranı uyumaz).');}}catch(e){log('Ekran uyku kilidi alınamadı: '+e.message);}}
+function releaseWake(){try{wakeLock?.release();}catch{}wakeLock=null;}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&cfg.auto&&mode==='ble')requestWake();});
+
+async function autoCommand(what){
+  if(busy){log('Otomatik '+what+' ertelendi: önceki komut sürüyor.');engine.sendFailed(what);return;}
+  busy=true;render();
+  try{
+    const r=what==='start'?await ble.start():await ble.stop();
+    log(`OTOMATİK ${what.toUpperCase()}: ${r?.confirmed?'durum değişimi görüldü':'durum değişimi henüz görülmedi'}.`);
+    $('lastTestResult').textContent=`OTOMATİK ${what.toUpperCase()}: ${r?.confirmed?'durum değişikliği görüldü':'GATT yazıldı, sonuç doğrulanamadı'}`;
+  }catch(e){log('Otomatik '+what+' başarısız: '+e.message);engine.sendFailed(what);}
+  finally{busy=false;render();}
+}
+async function syncTarget(s){
+  const wanted=cfg.stop;
+  if(s.target===wanted){targetSyncTries=0;return;}
+  if(busy||targetSyncTries>=3||Date.now()-lastTargetSentAt<20000||!ble.canControl)return;
+  targetSyncTries++;lastTargetSentAt=Date.now();busy=true;render();
+  try{const r=await ble.target(wanted);if(r?.confirmed){targetTestConfirmed=true;cfg.target=wanted;save();}}
+  catch(e){log('Hedef eşitleme başarısız: '+e.message);}
+  finally{busy=false;render();}
+}
+function autoStep(status){
+  if(!cfg.auto||mode!=='ble'||!manualArmed)return;
+  engine.cfg={...cfg,maxStartsPerHour:4};
+  const d=engine.evaluate(status,Date.now());
+  $('autoReason').textContent=d.reason;
+  if(d.alert)notify(d.alert);
+  if(d.disableAuto){cfg=updateAuto(cfg,false);engine.reset();releaseWake();save();log('Otomatik kontrol kendini kapattı: '+d.reason);render();return;}
+  if(d.action==='start'){log('OTOMATİK KARAR: '+d.reason);autoCommand('start');}
+  else if(d.action==='stop'){log('OTOMATİK KARAR: '+d.reason);autoCommand('stop');}
+  else syncTarget(status);
+}
+// Telemetri 20 sn gelmezse salt-okunur durum isteği gönder (yalnızca sayfa açıkken).
+setInterval(()=>{if(mode==='ble'&&ble.connected&&ble.writeChar&&Date.now()-(ble.lastStatusAt||0)>20000)ble.requestStatus();},15000);
+
 setInterval(()=>{
  if(mode!=='demo')return;
  // Demo yalnızca görünüş ve algoritma testi içindir.
@@ -148,5 +211,5 @@ setInterval(()=>{
 window.addEventListener('pagehide',()=>{ // Kapandığında otomatik komut garantisi yok; güç kesme uygulanmaz.
  cfg.auto=false;save();
 });
-log('V3.8 DİZİ C: Kullanıcının RE5011 üzerinde START verdiğini doğruladığı 0x61 / 01 / HEDEF-B4 / 00 biçimi. Hedef canlı 3A00 cihaz verisinden alınır; CRC yeniden hesaplanır. STOP, 10–40°C hedef, Mod 0 korunur. 0x41 ACK ve Adım 5→1 izlenir; otomatik kontrol kapalı.');
+log('V3.9 DİZİ C: Kullanıcının RE5011 üzerinde START verdiğini doğruladığı 0x61 / 01 / HEDEF-B4 / 00 biçimi. Hedef canlı 3A00 cihaz verisinden alınır; CRC yeniden hesaplanır. STOP, 10–40°C hedef, Mod 0 korunur. 0x41 ACK ve Adım 5→1 izlenir; otomatik kontrol kapalı.');
 render();

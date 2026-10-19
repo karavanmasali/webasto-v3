@@ -4,18 +4,18 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b1223" />
-  <meta name="description" content="Karavan Webasto V3.8 DİZİ C START Komut Testi — RE5011 kontrollü manuel Bluetooth denemeleri." />
-  <title>Karavan Webasto V3.8 DİZİ C START</title>
+  <meta name="description" content="Karavan Webasto V3.9 DİZİ C START Komut Testi — RE5011 kontrollü manuel Bluetooth denemeleri." />
+  <title>Karavan Webasto V3.9 DİZİ C START</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="style.css?v=3.8.0" />
-  <script type="module" src="app.js?v=3.8.0"></script>
+  <link rel="stylesheet" href="style.css?v=3.9.0" />
+  <script type="module" src="app.js?v=3.9.0"></script>
 </head>
 <body>
   <main class="shell">
     <header class="top">
       <div class="brand-mark" aria-hidden="true">♨</div>
-      <div class="top-title"><h1>Karavan Webasto <span>V3.8 DİZİ C START</span></h1><p>Quatro · HeatGenie / RE5011</p></div>
+      <div class="top-title"><h1>Karavan Webasto <span>V3.9 DİZİ C START</span></h1><p>Quatro · HeatGenie / RE5011</p></div>
       <span id="connectionBadge" class="pill offline">Bağlı değil</span>
     </header>
 
@@ -48,9 +48,9 @@
     </section>
 
     <section class="panel" aria-label="Gerçek cihaz için manuel komut testi">
-      <div class="section-heading"><h2>V3.8 • Gerçek komut testi</h2><span>Windows 11 / Chrome</span></div>
-      <p class="rule"><strong>V3.8 — Başarılı olduğu bildirilen Dizi C:</strong> START = <code>AA 00 61 01 [hedef °C] 00 CRC CRC</code>. Cihazın güncel hedef sıcaklığı (10–40°C) B4 alanına yazılır; CRC her seferinde yeniden hesaplanır. Örnek 22°C: <code>AA 00 61 01 16 00 D6 A9</code>. 0x41 yanıtı ve fiziksel çalışma geçişi kaydedilir. Çalışma MOD 0 değiştirilmez. STOP/CLEAR ve hedef +/− aynen korunur. TEST yalnızca gözetim, havalandırma ve CO alarmı altında yapılır.</p>
-      <label class="test-consent"><input type="checkbox" id="manualTestArm" disabled /> Cihazın yanında olduğumu ve yalnızca tek seferlik manuel Bluetooth komutu göndermek istediğimi onaylıyorum.</label>
+      <div class="section-heading"><h2>V3.9 • Gerçek komut testi</h2><span>Windows 11 / Chrome</span></div>
+      <p class="rule"><strong>V3.9 — Başarılı olduğu bildirilen Dizi C:</strong> START = <code>AA 00 61 01 [hedef °C] 00 CRC CRC</code>. Cihazın güncel hedef sıcaklığı (10–40°C) B4 alanına yazılır; CRC her seferinde yeniden hesaplanır. Örnek 22°C: <code>AA 00 61 01 16 00 D6 A9</code>. 0x41 yanıtı ve fiziksel çalışma geçişi kaydedilir. Çalışma MOD 0 değiştirilmez. STOP/CLEAR ve hedef +/− aynen korunur. TEST yalnızca gözetim, havalandırma ve CO alarmı altında yapılır.</p>
+      <label class="test-consent"><input type="checkbox" id="manualTestArm" disabled /> Cihazın yanında olduğumu ve Bluetooth komutları (otomatik START/STOP dahil) göndermek istediğimi onaylıyorum.</label>
       <p class="help" id="manualTestStatus">Bluetooth bağlantısı kurulduğunda manuel test açılabilir.</p>
       <p id="lastTestResult" class="help">Önce 22→23°C gibi bir hedef değişikliğiyle test et. START/STOP ancak hedef geri okuma testi geçilirse açılır.</p>
     </section>
@@ -68,7 +68,7 @@
 
     <section class="panel">
       <div class="section-heading"><h2>Otomatik termostat</h2><label class="switch"><input id="autoToggle" type="checkbox" /><span class="knob"></span><span class="sr-only">Otomatik kontrol</span></label></div>
-      <p class="help space-top">Ortam START seviyesine indiğinde çalıştırır, STOP seviyesinde yeterince kalınca kontrollü durdurur.</p>
+      <p class="help space-top">Ortam START seviyesine indiğinde çalıştırır, STOP seviyesinde yeterince kalınca durdurur. Gerçek cihazda test için önce manuel test onay kutusunu işaretle. Chrome sekmesi ve bilgisayar açık kalmalı; bağlantı koparsa 10 dk boyunca otomatik yeniden bağlanılır.</p>
       <div class="setting">
         <div><strong>START sıcaklığı</strong><p>Bu değere düşünce açılır</p></div>
         <div class="mini-stepper"><button id="startMinus" aria-label="START azalt">−</button><output id="startValue">20 °C</output><button id="startPlus" aria-label="START artır">+</button></div>
@@ -88,9 +88,9 @@
       <div class="actions"><button class="btn amber" id="leaveBtn" disabled>Karavandan ayrıldım</button><button class="btn secondary" id="readBtn" disabled>Veri oku</button><button class="btn ghost" id="exportBtn">Tanı kayıtlarını indir</button></div>
       <p class="help">Bu test sürümünde “Karavandan ayrıldım” gerçek cihazdayken devre dışıdır. Isıtıcı soğutması için orijinal kumandası kullanılabilir.</p>
       <details><summary>Bluetooth tanılama kayıtları</summary><pre id="logOutput" class="logs">Henüz kayıt yok.</pre></details>
-      <details><summary>Teknik durum / V3.2 sınırları</summary><p class="help">Bluetooth GATT bağlantısı, servis keşfi ve gerçek 3A00 durum raporları için CRC16 doğrulamalı okuma bulunur. diesel-heater-ble 0.3.8 kaynak kodundan üretilen komutlar yalnızca kullanıcı açıkça manuel testi onaylarsa 3A01 kanalına yazılır. GATT teyidi cihazın komutu uyguladığını kanıtlamaz. Hedef değişimi 3A00 alanından kontrol edilir; START/STOP için durum değişimi izlenir. 0x41 kısa yanıtı için durum (0=başarılı,1=tekrar) ve START B4 alanının eşleşmesi incelenir. Mod 1 veya 2 START testi bu sürümde yapılmaz. Otomatik termostat gerçek cihazda devre dışıdır. Demo gerçek ısıtıcıyı kumanda etmez. Amaç doğrulanmamış bir paketin ısıtıcıya gönderilmesini önlemektir.</p></details>
+      <details><summary>Teknik durum / V3.2 sınırları</summary><p class="help">Bluetooth GATT bağlantısı, servis keşfi ve gerçek 3A00 durum raporları için CRC16 doğrulamalı okuma bulunur. diesel-heater-ble 0.3.8 kaynak kodundan üretilen komutlar yalnızca kullanıcı açıkça manuel testi onaylarsa 3A01 kanalına yazılır. GATT teyidi cihazın komutu uyguladığını kanıtlamaz. Hedef değişimi 3A00 alanından kontrol edilir; START/STOP için durum değişimi izlenir. 0x41 kısa yanıtı için durum (0=başarılı,1=tekrar) ve START B4 alanının eşleşmesi incelenir. Mod 1 veya 2 START testi bu sürümde yapılmaz. Otomatik termostat gerçek cihazda manuel test onayı + ayrı açık onayla etkinleşir; hata, Mod≠0, Fahrenheit veya iki başarısız START durumunda kendini kapatır. STOP hiçbir koşula bağlı değildir. Demo gerçek ısıtıcıyı kumanda etmez. Amaç doğrulanmamış bir paketin ısıtıcıya gönderilmesini önlemektir.</p></details>
     </section>
-    <footer>Karavan Webasto V3.8 DİZİ C START · Yerel kayıt · İnternet gerektirmeyen termostat mantığı (sayfa açıkken) · CO alarmının yerine geçmez.</footer>
+    <footer>Karavan Webasto V3.9 DİZİ C START · Yerel kayıt · İnternet gerektirmeyen termostat mantığı (sayfa açıkken) · CO alarmının yerine geçmez.</footer>
   </main>
 </body>
 </html>

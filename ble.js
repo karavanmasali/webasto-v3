@@ -1,6 +1,6 @@
 /** HeatGenie RE5011 BLE — supervised/manual diagnostics ONLY. */
-import {HEATGENIE_SERVICE, HEATGENIE_READ_CHAR, HEATGENIE_WRITE_CHAR, parseHeatGenieStatus, crc16CcittZero} from './protocol.mjs?v=3.6.0';
-import {guardedBuild,hexBytes} from './command-profile.mjs?v=3.6.0';
+import {HEATGENIE_SERVICE, HEATGENIE_READ_CHAR, HEATGENIE_WRITE_CHAR, parseHeatGenieStatus, crc16CcittZero} from './protocol.mjs?v=3.8.0';
+import {guardedBuild,hexBytes} from './command-profile.mjs?v=3.8.0';
 const bufferHex = data => hexBytes(new Uint8Array(data.buffer ?? data, data.byteOffset ?? 0, data.byteLength ?? undefined));
 export const runningStep = status => status.stateCode & 0x0f;
 export const isOffStep = status => [0,5].includes(runningStep(status));
@@ -9,7 +9,7 @@ export class HeatGenieBLE {
     this.onLog=onLog;this.onDisconnect=onDisconnect;this.onStatus=onStatus;
     this.device=null;this.server=null;this.chars=[];this.writeChar=null;
     this.lastVerifiedStatus=null;this.lastStatusAt=0;
-    this.connected=false;this.writePending=false;this.waiter=null;this.startTried=false;
+    this.connected=false;this.writePending=false;this.waiter=null;this.startTried=false;this.powerAck=null;
   }
   process(data, source) {
     this.onLog(`${source}: ${bufferHex(data)}`);
@@ -22,6 +22,17 @@ export class HeatGenieBLE {
         const op='0x'+raw[2].toString(16).padStart(2,'0').toUpperCase();
         const arg=hexBytes(raw.subarray(3,6));
         this.onLog(`KISA YANIT CRC OK | opcode ${op} | alanlar ${arg} | Bu yanıt tek başına START başarısı değildir.`);
+        // 0x41 echoes B4 in byte4. In Dizi C B4 is the start target temperature.
+        // A matching ACK alone does NOT prove real ignition.
+        if (raw[2]===0x41) {
+          const code=raw[3], echoedB4=raw[4];
+          const label=code===0?'KOMUT KABUL YANITI':code===1?'TEKRAR KOMUT':'KOMUT BAŞARISIZ / BİLİNMEYEN';
+          this.onLog(`HEATGENIE 0x41 ACK: durum=${code} (${label}), B4=${echoedB4}${this.powerAck ? ', beklenen B4='+this.powerAck.b4 : ''}.`);
+          if (this.powerAck && echoedB4===this.powerAck.b4) {
+            this.powerAck.responseCode=code;
+            this.onLog(code===0?'START B4 yanıtı eşleşti. Fiziksel ateşleme ayrıca durum adımıyla doğrulanır.':'START B4 yanıtı eşleşti fakat cihaz olumlu yanıt vermedi.');
+          }
+        }
         return;
       }
       if(raw.length===0){return;} // Bazı cihaz sürümleri ilk subscribe/read anında boş DataView verir.
@@ -37,7 +48,7 @@ export class HeatGenieBLE {
     const w=this.waiter;this.waiter=null;clearTimeout(w.timer);w.resolve(confirmed);
   }
   onLost() {
-    this.connected=false;this.chars=[];this.writeChar=null;this.lastVerifiedStatus=null;this.lastStatusAt=0;this.startTried=false;
+    this.connected=false;this.chars=[];this.writeChar=null;this.lastVerifiedStatus=null;this.lastStatusAt=0;this.startTried=false;this.powerAck=null;
     this.completeWaiter(false);this.onLog('Bluetooth bağlantısı kesildi. Manuel test durduruldu.');this.onDisconnect();
   }
   async connect() {
@@ -71,7 +82,7 @@ export class HeatGenieBLE {
   }
   disconnect(){
     if(this.device?.gatt?.connected)this.device.gatt.disconnect();
-    this.connected=false;this.chars=[];this.writeChar=null;this.lastVerifiedStatus=null;this.lastStatusAt=0;this.startTried=false;this.completeWaiter(false);
+    this.connected=false;this.chars=[];this.writeChar=null;this.lastVerifiedStatus=null;this.lastStatusAt=0;this.startTried=false;this.powerAck=null;this.completeWaiter(false);
   }
   get canControl() {
     return this.connected && !!this.writeChar && !!this.lastVerifiedStatus &&
@@ -86,10 +97,20 @@ export class HeatGenieBLE {
     if(operation==='start' && !isOffStep(old))throw new Error('START için cihazın kapalı/bekleme halinde olması gerekiyor.');
     if(operation==='stop' && isOffStep(old))throw new Error('STOP için cihaz zaten kapalı/bekleme durumunda görünüyor.');
     if(operation==='target' && old.target===value)throw new Error(`Cihaz zaten ${value} °C hedefte.`);
-    const bytes=guardedBuild(operation,value);
+    let startTarget;
+    if(operation==='start') {
+      // Dizi C: B4=cihazın en son CRC-doğrulanmış 3A00 bildirimindeki hedef sıcaklık.
+      // UI'daki eski hedef, otomatik ayar ya da random değer asla kullanılmaz.
+      startTarget=old.target;
+      if(!Number.isInteger(startTarget) || startTarget<10 || startTarget>40)
+        throw new Error('START için cihazdan doğrulanmış 10–40 °C hedef değeri gerekli.');
+      this.powerAck={b4:startTarget,responseCode:null};
+      this.onLog(`V3.8 DİZİ C: START B4=hedef ${startTarget} °C (0x${startTarget.toString(16).padStart(2,'0').toUpperCase()}), B5=00; CRC hesaplanıyor. Mod değiştirilmez.`);
+    }
+    const bytes=guardedBuild(operation,operation==='start'?startTarget:value);
     this.writePending=true;
     try {
-      this.onLog(`3A01 YAZMA İSTEĞİ (${operation}${operation==='target'?' '+value+'°C':''}): ${hexBytes(bytes)} | Önceki durum adımı: ${runningStep(old)} | Hedef: ${old.target}`);
+      this.onLog(`3A01 YAZMA İSTEĞİ (${operation}${operation==='target'?' '+value+'°C':operation==='start'?' / Dizi C B4='+startTarget+'°C':''}): ${hexBytes(bytes)} | Önceki durum adımı: ${runningStep(old)} | Hedef: ${old.target}`);
       // RE5011 reports write=true, writeWithoutResponse=false. Do not force no-response.
       await this.writeChar.writeValueWithResponse(bytes);
       this.onLog(`3A01 GATT yazma yanıtı alındı (${operation}). Bu, ısıtıcının komutu UYGULADIĞINI kanıtlamaz.`);
@@ -102,6 +123,8 @@ export class HeatGenieBLE {
         this.waiter={resolve,predicate,timer};
       });
       if(operation==='start'){
+        const ack=this.powerAck;
+        this.onLog(ack?.responseCode===0 ? '0x41 START ACK BAŞARILI: B4 eşleşti. Fiziksel ateşleme ancak adım değişimiyle doğrulanır.' : ack?.responseCode===1 ? '0x41 START ACK: TEKRAR KOMUT bildirildi; otomatik tekrar yok.' : ack?.responseCode!=null ? `0x41 START ACK: farklı durum kodu ${ack.responseCode}.` : '0x41 START ACK: bu gözlem penceresinde eşleşen yanıt görülmedi.');
         const now=this.lastVerifiedStatus;
         this.onLog(`START alan karşılaştırması: kayıt34 0x${old.register34.toString(16).padStart(2,'0')} → 0x${(now?.register34 ?? old.register34).toString(16).padStart(2,'0')}; adım ${runningStep(old)} → ${now?runningStep(now):'bilinmiyor'}. Kayıt34 anlamı kesin değil, ateşleme kanıtı değildir.`);
       }
@@ -147,42 +170,27 @@ export class HeatGenieBLE {
       return confirmed;
     } finally {this.writePending=false;}
   }
-  /** V3.6 supervised last-known alternate: manual gear mode 1 + one standard 0x61 START.
-   * Source library defines manual mode=1 but hardware START is NOT yet validated.
-   * This test may change heater mode. Not unattended automation.
+  /** V3.8: User-confirmed Dizi C from the standalone RE5011 test tool.
+   * START only when off, in MODE 0, with fresh CRC-verified temperature.
+   * Sends 0x61 0x01 <device target 10..40> 0x00, one time.
    */
-  async startWithMode1(){
-    if(this.startTried)throw new Error('Bu bağlantıda zaten START denendi. Önce tanı kaydını indir; ikinci otomatik deneme yok.');
-    if(!this.canControl)throw new Error('START: güncel BLE bağlantısı ve telemetri gerekiyor.');
+  async startWithTemperatureB4(){
+    if(this.startTried)throw new Error('Bu bağlantıda START zaten denendi. Tanı kaydını indir; otomatik ikinci deneme yapılmaz.');
+    if(!this.canControl)throw new Error('START için güncel BLE telemetrisi gerekli.');
     const initial=this.lastVerifiedStatus;
-    if(initial.errorFlags)throw new Error('Cihaz hatası var; START gönderilmiyor.');
+    if(initial.errorFlags)throw new Error('Cihaz hata bildiriyor; START gönderilmiyor.');
     if(!isOffStep(initial) || initial.fan || initial.pump || initial.glow)
-      throw new Error('START yalnızca fan/pompa/kızdırma kapalıyken denenir.');
-    if(this.runMode!==0)throw new Error(`Cihaz şu an mod ${this.runMode}. Önce “Otomatik/Sıcaklık moduna dön (0)” ile MOD 0 doğrula.`);
+      throw new Error('START yalnızca cihaz tamamen durmuşken denenebilir.');
+    if(this.runMode!==0)throw new Error(`Cihaz MOD ${this.runMode}. Önce tamamen durmuş cihazı “Otomatik/Sıcaklık moduna dön (0)” ile MOD 0 yap.`);
     this.startTried=true;
-    this.onLog('V3.6 MOD 1 testi: mod 0 doğrulandı. 0x66 ile mod1 seçilecek, cihazdan doğrulanırsa yalnızca BİR 0x61 START gönderilecek.');
-    const confirmedMode=await this.writeMode(1);
-    if(!confirmedMode){this.onLog('MOD 1 cihazdan doğrulanmadı; START GÖNDERİLMEDİ.');return {transportAccepted:true,confirmed:false,modeVerified:false,kind:'mode'};}
-    // Mode selection itself may initiate a transition on certain controllers.
-    await new Promise(resolve=>setTimeout(resolve,800));
-    const now=this.lastVerifiedStatus;
-    if(!this.canControl || !now || now.errorFlags || this.runMode!==1){
-      this.onLog('Mod1 sonrası geçerli/kararlı cihaz durumu yok. START GÖNDERİLMEDİ.');
-      return {transportAccepted:true,confirmed:false,modeVerified:false,kind:'mode'};
-    }
-    if(!isOffStep(now) || now.fan || now.pump || now.glow){
-      this.onLog('UYARI: Mod 1 seçimi sonrasında çalışma/çevrim değişti. İKİNCİ START GÖNDERİLMEDİ. Cihazı gözle kontrol et.');
-      return {transportAccepted:true,confirmed:!isOffStep(now),modeVerified:true,kind:'transition'};
-    }
-    this.onLog('MOD 1 DOĞRULANDI. Bir kez kaynak protokoldeki 0x61 START paketi gönderiliyor.');
-    const result=await this.sendCommand('start');
-    return {...result,modeVerified:true};
+    this.onLog('V3.8: Kullanıcının çalıştırdığı Dizi C seçildi. MOD 0 korunur; güncel hedef B4 ile TEK 0x61 START gönderilir.');
+    return this.sendCommand('start');
   }
   async restoreTemperatureMode(){
-    this.onLog('V3.6: Kullanıcı isteğiyle çalışma modu 0 (sıcaklık) geri seçiliyor.');
+    this.onLog('V3.8: Kullanıcı isteğiyle çalışma modu 0 (sıcaklık) geri seçiliyor.');
     return this.writeMode(0);
   }
-  async start(){return this.startWithMode1();}
+  async start(){return this.startWithTemperatureB4();}
   async stop(){return this.sendCommand('stop');}
   async target(degrees){return this.sendCommand('target',degrees);}
 }

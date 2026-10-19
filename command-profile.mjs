@@ -1,12 +1,12 @@
 /**
  * HeatGenie/Boygu command format based on diesel-heater-ble 0.3.8,
  * ProtocolHeatGenie.build_command() under MIT license.
- * SOURCE CONFIRMED. Physical RE5011 acceptance is NOT confirmed.
+ * V3.8 START B4=target °C is based on user-reported physically successful RE5011 Dizi C test.
  * Copyright (c) 2024 Spettacolo83 (original Python library).
  */
-import {crc16CcittZero} from './protocol.mjs?v=3.6.0';
+import {crc16CcittZero} from './protocol.mjs?v=3.8.0';
 export const commandProfile = Object.freeze({
-  source: 'diesel-heater-ble 0.3.8 ProtocolHeatGenie',
+  source: 'User-tested RE5011 Dizi C from re5011_start_test.html; CRC16/XMODEM',
   hardwareVerified: false,
   targetMin: 10,
   targetMax: 40,
@@ -21,7 +21,12 @@ export function buildHeatGenieFrame(command, first, second, third) {
 }
 export function guardedBuild(operation, target) {
   switch (operation) {
-    case 'start': return buildHeatGenieFrame(0x61,0x01,0xff,0);
+    case 'start':
+      // Kullanıcının gerçekten ateşlemeyi başlattığını bildirdiği Dizi C:
+      // CMD 0x61, B3=0x01, B4=cihazdan okunan HEDEF SICAKLIK (10–40), B5=0.
+      // Orijinal APK random nonce yaklaşımı V3.7'de ayrı test edilmişti.
+      if(!Number.isInteger(target) || target<10 || target>40) throw new RangeError('START B4 sıcaklığı 10–40 °C olmalı.');
+      return buildHeatGenieFrame(0x61,0x01,target,0);
     case 'auto-update': return buildHeatGenieFrame(0x65,0x02,0x14,0x1e); // ProtocolHeatGenie 0.3.8: command 1, register area 2, 20, 30
     case 'manual-gear-mode': return buildHeatGenieFrame(0x66,0x00,0x00,0x01); // Manual power mode 1: supported HeatGenie run mode
     case 'start-stop-mode': return buildHeatGenieFrame(0x66,0x00,0x00,0x02); // ProtocolHeatGenie: run-mode 2 = start/stop

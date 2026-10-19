@@ -1,74 +1,103 @@
-/* HeatGenie BLE GATT: gerçek paket okuma ve CRC doğrulama. Kasıtlı olarak komut YOK. */
-import {HEATGENIE_SERVICE, HEATGENIE_READ_CHAR, parseHeatGenieStatus} from './protocol.mjs';
-const hex = data => Array.from(new Uint8Array(data.buffer ?? data, data.byteOffset ?? 0, data.byteLength ?? undefined))
-  .map(x => x.toString(16).padStart(2, '0')).join(' ').toUpperCase();
+/** HeatGenie RE5011 BLE — supervised/manual diagnostics ONLY. */
+import {HEATGENIE_SERVICE, HEATGENIE_READ_CHAR, HEATGENIE_WRITE_CHAR, parseHeatGenieStatus} from './protocol.mjs';
+import {guardedBuild,hexBytes} from './command-profile.mjs';
+const bufferHex = data => hexBytes(new Uint8Array(data.buffer ?? data, data.byteOffset ?? 0, data.byteLength ?? undefined));
+export const runningStep = status => status.stateCode & 0x0f;
+export const isOffStep = status => [0,5].includes(runningStep(status));
 export class HeatGenieBLE {
   constructor(onLog, onDisconnect, onStatus=()=>{}) {
-    this.onLog = onLog; this.onDisconnect = onDisconnect; this.onStatus = onStatus;
-    this.device = null; this.server = null; this.chars = [];
-    this.connected = false;
+    this.onLog=onLog;this.onDisconnect=onDisconnect;this.onStatus=onStatus;
+    this.device=null;this.server=null;this.chars=[];this.writeChar=null;
+    this.lastVerifiedStatus=null;this.lastStatusAt=0;
+    this.connected=false;this.writePending=false;this.waiter=null;
   }
   process(data, source) {
-    this.onLog(`${source}: ${hex(data)}`);
+    this.onLog(`${source}: ${bufferHex(data)}`);
     try {
-      const status = parseHeatGenieStatus(data);
-      this.onLog(`CRC OK | Oda ${status.roomTemp.toFixed(1)} °C | Kasa ${status.caseTemp.toFixed(1)} °C | Akü ${status.voltage.toFixed(1)} V | Hedef ${status.target} °C | Durum 0x${status.stateCode.toString(16).padStart(2,'0')} | Hata 0x${status.errorFlags.toString(16)}`);
+      const status=parseHeatGenieStatus(data);
+      this.lastVerifiedStatus=status;this.lastStatusAt=Date.now();
+      this.onLog(`CRC OK | Oda ${status.roomTemp.toFixed(1)} °C | Kasa ${status.caseTemp.toFixed(1)} °C | Akü ${status.voltage.toFixed(1)} V | Hedef ${status.target} °C | Adım ${runningStep(status)} | Hata 0x${status.errorFlags.toString(16)}`);
       this.onStatus(status);
-    } catch (e) {
-      this.onLog(`Paket yorumlanmadı: ${e.message}`);
-    }
+      if(this.waiter && this.waiter.predicate(status)) this.completeWaiter(true);
+    }catch(e){this.onLog(`Paket atlandı: ${e.message}`);}
+  }
+  completeWaiter(confirmed) {
+    if(!this.waiter)return;
+    const w=this.waiter;this.waiter=null;clearTimeout(w.timer);w.resolve(confirmed);
+  }
+  onLost() {
+    this.connected=false;this.chars=[];this.writeChar=null;this.lastVerifiedStatus=null;this.lastStatusAt=0;
+    this.completeWaiter(false);this.onLog('Bluetooth bağlantısı kesildi. Manuel test durduruldu.');this.onDisconnect();
   }
   async connect() {
-    if (!navigator.bluetooth) throw new Error('Bu tarayıcı Web Bluetooth desteklemiyor. iPhone için Bluefy kullan.');
-    // Kullanıcı seçimi zorunlu, program arka planda cihaz aramaz.
-    const device = await navigator.bluetooth.requestDevice({acceptAllDevices:true, optionalServices:[HEATGENIE_SERVICE]});
-    this.device = device;
-    device.addEventListener('gattserverdisconnected', () => {
-      this.connected=false;this.chars=[];
-      this.onLog('Bluetooth bağlantısı koptu. Otomatik kontrol kapalı.');
-      this.onDisconnect();
-    });
-    this.server=await device.gatt.connect();
-    this.connected=true;
-    const services = await this.server.getPrimaryServices();
-    this.onLog('Bağlandı: '+ (device.name||'Adsız cihaz') + ' | Servis sayısı: '+services.length);
-    const heatgenie = services.find(s => s.uuid.toLowerCase() === HEATGENIE_SERVICE);
-    if (!heatgenie) {
-      this.onLog('181A HeatGenie servisi bulunamadı; başka cihaz seçilmiş olabilir.');
-      return device.name;
-    }
-    const chars = await heatgenie.getCharacteristics();
-    this.chars = chars;
-    for (const ch of chars) {
-      const p=ch.properties;
-      this.onLog(`Karakteristik ${ch.uuid}; read=${p.read}, notify=${p.notify}, write=${p.write}, writeNoResp=${p.writeWithoutResponse}`);
-      if (p.notify || p.indicate) {
-        try {
-          ch.addEventListener('characteristicvaluechanged', e => {
-            if (ch.uuid.toLowerCase() === HEATGENIE_READ_CHAR) this.process(e.target.value, `BİLDİRİM ${ch.uuid}`);
-          });
-          await ch.startNotifications();
-        } catch(e) {this.onLog(`Bildirim açılamadı ${ch.uuid}: ${e.message}`);}
+    if(!navigator.bluetooth)throw new Error('Web Bluetooth için Windows Chrome/Edge kullan.');
+    const device=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[HEATGENIE_SERVICE]});
+    this.device=device;
+    device.addEventListener('gattserverdisconnected',()=>this.onLost());
+    this.server=await device.gatt.connect();this.connected=true;
+    try {
+      const svc=await this.server.getPrimaryService(HEATGENIE_SERVICE);
+      const chars=await svc.getCharacteristics();this.chars=chars;
+      this.writeChar=chars.find(ch=>ch.uuid.toLowerCase()===HEATGENIE_WRITE_CHAR && ch.properties.write)??null;
+      for(const ch of chars){
+        const p=ch.properties;
+        this.onLog(`Karakteristik ${ch.uuid}; read=${p.read}, notify=${p.notify}, write=${p.write}, writeNoResp=${p.writeWithoutResponse}`);
+        if(ch.uuid.toLowerCase()===HEATGENIE_READ_CHAR){
+          if(p.notify){
+            ch.addEventListener('characteristicvaluechanged',e=>this.process(e.target.value,`BİLDİRİM ${ch.uuid}`));
+            await ch.startNotifications();this.onLog('3A00 bildirimleri başlatıldı.');
+          }
+          if(p.read){try{this.process(await ch.readValue(),`OKUMA ${ch.uuid}`);}catch(e){this.onLog(`İlk okuma alınamadı: ${e.message}`);}}
+        }
       }
-      if (p.read && ch.uuid.toLowerCase() === HEATGENIE_READ_CHAR) {
-        try { this.process(await ch.readValue(), `OKUMA ${ch.uuid}`); }
-        catch(e) {this.onLog(`Okuma başarısız ${ch.uuid}: ${e.message}`);}
-      }
-    }
-    return device.name || 'Bluetooth cihazı';
+      if(!this.writeChar)this.onLog('UYARI: 3A01 yazma karakteristiği yok; manuel test kilitli.');
+      return device.name||'Bluetooth cihazı';
+    }catch(e){this.disconnect();throw e;}
   }
-  async read() {
-    for (const ch of this.chars) if(ch.properties.read && ch.uuid.toLowerCase() === HEATGENIE_READ_CHAR) {
-      try {this.process(await ch.readValue(), `OKUMA ${ch.uuid}`);}
-      catch(e) {this.onLog(e.message);}
-    }
+  async read(){
+    const ch=this.chars.find(x=>x.uuid.toLowerCase()===HEATGENIE_READ_CHAR && x.properties.read);
+    if(ch){try{this.process(await ch.readValue(),`OKUMA ${ch.uuid}`);}catch(e){this.onLog(`Okuma hatası: ${e.message}`);}}
   }
-  disconnect() {
-    if (this.device?.gatt?.connected) this.device.gatt.disconnect();
-    this.connected=false;this.chars=[];
+  disconnect(){
+    if(this.device?.gatt?.connected)this.device.gatt.disconnect();
+    this.connected=false;this.chars=[];this.writeChar=null;this.lastVerifiedStatus=null;this.lastStatusAt=0;this.completeWaiter(false);
   }
-  get canControl() {return false;} // Komut çerçevelerini henüz doğrulamadık; güvenlik kilidi.
-  async start() {throw new Error('START komut paketi doğrulanmadı; komut gönderilmedi.');}
-  async stop() {throw new Error('STOP/CLEAR komut paketi doğrulanmadı; komut gönderilmedi.');}
-  async target() {throw new Error('Hedef sıcaklık komut paketi doğrulanmadı; komut gönderilmedi.');}
+  get canControl() {
+    return this.connected && !!this.writeChar && !!this.lastVerifiedStatus &&
+      Date.now()-this.lastStatusAt < 6000 && !this.writePending;
+  }
+  async sendCommand(operation,value){
+    if(!this.canControl)throw new Error('Güncel ve doğrulanmış telemetri veya 3A01 bağlantısı yok.');
+    if(this.writePending)throw new Error('Önceki komut henüz tamamlanmadı.');
+    if(this.lastVerifiedStatus.errorFlags)throw new Error('Cihazda hata bayrağı var. Orijinal kontrol panelinden kontrol edin.');
+    if(operation==='target' && (this.lastVerifiedStatus.flags & 0x10))throw new Error('Cihaz Fahrenheit modunda; Celsius hedef komutu göndermeyeceğiz.');
+    const old=this.lastVerifiedStatus;
+    if(operation==='start' && !isOffStep(old))throw new Error('START için cihazın kapalı/bekleme halinde olması gerekiyor.');
+    if(operation==='stop' && isOffStep(old))throw new Error('STOP için cihaz zaten kapalı/bekleme durumunda görünüyor.');
+    if(operation==='target' && old.target===value)throw new Error(`Cihaz zaten ${value} °C hedefte.`);
+    const bytes=guardedBuild(operation,value);
+    this.writePending=true;
+    try {
+      this.onLog(`3A01 YAZMA İSTEĞİ (${operation}${operation==='target'?' '+value+'°C':''}): ${hexBytes(bytes)} | Önceki durum adımı: ${runningStep(old)} | Hedef: ${old.target}`);
+      // RE5011 reports write=true, writeWithoutResponse=false. Do not force no-response.
+      await this.writeChar.writeValueWithResponse(bytes);
+      this.onLog(`3A01 GATT yazma yanıtı alındı (${operation}). Bu, ısıtıcının komutu UYGULADIĞINI kanıtlamaz.`);
+      let predicate;
+      if(operation==='target')predicate=s=>s.target===value;
+      else if(operation==='start')predicate=s=>!isOffStep(s) && !s.errorFlags;
+      else predicate=s=>isOffStep(s)||runningStep(s)!==runningStep(old);
+      const confirmed=await new Promise(resolve=>{
+        const timer=setTimeout(()=>this.completeWaiter(false), operation==='target'?6500:16000);
+        this.waiter={resolve,predicate,timer};
+      });
+      if(confirmed){
+        this.onLog(operation==='target' ? `CİHAZ HEDEF OKUMASI DOĞRULANDI: ${value} °C` : `CİHAZ DURUM DEĞİŞİMİ GÖRÜLDÜ (${operation}); ateşleme/soğutmanın tamamlandığı anlamına gelmez.`);
+      }else this.onLog(`CİHAZ ETKİSİ DOĞRULANAMADI (${operation}). Aynı komutu otomatik tekrarlama.`);
+      return {transportAccepted:true,confirmed,kind:operation==='target'?'target':'transition'};
+    }catch(e){this.onLog(`3A01 komut hatası (${operation}): ${e.message}`);throw e;}
+    finally{this.writePending=false;}
+  }
+  async start(){return this.sendCommand('start');}
+  async stop(){return this.sendCommand('stop');}
+  async target(degrees){return this.sendCommand('target',degrees);}
 }

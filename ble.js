@@ -78,8 +78,19 @@ export class HeatGenieBLE {
   async connect() {
     if(!navigator.bluetooth)throw new Error('Web Bluetooth için Windows Chrome/Edge kullan.');
     const device=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[HEATGENIE_SERVICE]});
+    return this.attach(device);
+  }
+  /** Sayfa yenilenince, daha önce izin verilen cihaza kullanıcı hareketi olmadan bağlanmayı dener (Chrome getDevices). */
+  async reconnectKnown(id) {
+    if(!navigator.bluetooth?.getDevices)return null;
+    const devs=await navigator.bluetooth.getDevices();
+    const d=devs.find(x=>x.id===id)??(id?null:devs[0]);
+    if(!d)return null;
+    return this.attach(d);
+  }
+  async attach(device) {
     this.device=device;this.userDisconnect=false;this.reconnecting=false;
-    device.addEventListener('gattserverdisconnected',()=>this.onLost());
+    if(!device.__hgBound){device.__hgBound=true;device.addEventListener('gattserverdisconnected',()=>this.onLost());}
     this.server=await device.gatt.connect();this.connected=true;
     try {
       await this.setupServices();

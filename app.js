@@ -1,215 +1,357 @@
-import {changeStart,changeStop,updateAuto,safeConfig,clamp,thermostatDecision} from './thermostat.mjs?v=3.9.0';
-import {HeatGenieBLE} from './ble.js?v=3.9.0';
-import {AutoEngine} from './auto-engine.mjs?v=3.9.0';
-const $=id=>document.getElementById(id);
-const keys=['startMinus','startPlus','stopMinus','stopPlus','targetMinus','targetPlus'];
-let cfg;
-try { cfg=safeConfig(JSON.parse(localStorage.getItem('webasto-v3')||'null')); } catch { cfg=safeConfig(null); }
-let mode='none'; // none | demo | ble
-let manualArmed=false;let targetTestConfirmed=false;
-let heater='unknown';
-let demoRoom=19.2;
-let actualRoom=null, actualFan=null, actualPump=null, actualGlow=null, actualState=null, actualError=null;
-let caseTemp=null;
-let voltage=null;
-let targetOnDevice=null;
-let stopSince=null, lastStoppedAt=null, sent=false, busy=false, error=false;
-let lastUpdate=0;
-let logs=[];
-const log=(msg)=>{logs.push(`[${new Date().toLocaleTimeString('tr-TR')}] ${msg}`);logs=logs.slice(-300);$('logOutput').textContent=logs.join('\n');};
-const engine=new AutoEngine();
-let targetSyncTries=0,lastTargetSentAt=0,wakeLock=null;
+import {HeatGenieBLE, isOffStep} from './ble.js?v=4.0.0';
+import {AutoEngine} from './auto-engine.mjs?v=4.0.0';
+import {History, fmtDuration} from './history.mjs?v=4.0.0';
+
+const $ = id => document.getElementById(id);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const LOW_VOLT = 11.0;            // çalışırken bu değerin altı uyarı (cihaz ~10,8 V'ta kesiyor)
+const STALE_MS = 30000;           // telemetri bu süreden eskiyse "kontrol çalışmıyor"
+const LS_CFG = 'webasto.v4.cfg';
+
+/* ---------- Ayarlar (kalıcı) ---------- */
+const defaults = {auto:false, start:20, stop:25, stopDelay:30, restartDelay:180, minRun:600, notify:true, night:false, deviceId:null};
+function sanitize(c) {
+  c.start = clamp(Math.round(Number(c.start) || 20), 10, 38);
+  c.stop = clamp(Math.round(Number(c.stop) || 25), c.start + 2, 40);
+  c.auto = !!c.auto; c.notify = c.notify !== false; c.night = !!c.night;
+  return c;
+}
+function loadCfg() {
+  try { return sanitize({...defaults, ...JSON.parse(localStorage.getItem(LS_CFG) || '{}')}); }
+  catch { return sanitize({...defaults}); }
+}
+let cfg = loadCfg();
+const saveCfg = () => { try { localStorage.setItem(LS_CFG, JSON.stringify(cfg)); } catch { /* kota */ } };
+
+/* ---------- Durum ---------- */
+const history = new History(localStorage);
+const engine = new AutoEngine();
+let last = null, lastAt = 0, everConnected = false, busy = false;
+let prevRunning = null, stopRecorded = false, cooling = false, intent = null;
+let lowSince = null, lastLowAlert = 0, targetSyncTries = 0, lastTargetSentAt = 0, lastSampleAt = 0;
+let autoReasonText = '', wakeLock = null, range = '12', tab = 'home', toastTimer = null;
+const logLines = [];
+
+const fmtT = v => (typeof v === 'number' ? v.toLocaleString('tr-TR', {minimumFractionDigits: 0, maximumFractionDigits: 1}) : '—');
+const hhmm = t => new Date(t).toLocaleTimeString('tr-TR', {hour: '2-digit', minute: '2-digit'});
+const isIdle = s => isOffStep(s) && !s.fan && !s.pump && !s.glow;
+const fresh = () => last && Date.now() - lastAt < STALE_MS;
+const controlOk = () => ble.connected && fresh();
+
+function log(m) {
+  const d = new Date().toLocaleTimeString('tr-TR');
+  logLines.push(`[${d}] ${m}`);
+  if (logLines.length > 400) logLines.splice(0, logLines.length - 400);
+  if (tab === 'details') { const el = $('log'); el.textContent = logLines.join('\n'); el.scrollTop = el.scrollHeight; }
+}
+function toast(msg, ms = 4000) {
+  const el = $('toast'); el.textContent = msg; el.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, ms);
+}
+
+/* ---------- Bildirim / olay kaydı ---------- */
+async function ensureNotifyPermission() {
+  try { if ('Notification' in window && Notification.permission === 'default') await Notification.requestPermission(); } catch { /* yok say */ }
+}
+function pushNote(text, alert) {
+  if (!cfg.notify || !('Notification' in window) || Notification.permission !== 'granted') return;
+  try { new Notification('Webasto', {body: text, silent: !alert, tag: 'hg-' + Date.now()}); } catch { /* yok say */ }
+}
+function recordEvent(type, src, core) {
+  const t = Date.now();
+  history.addEvent({t, type, src, room: last?.roomTemp, text: core});
+  log(`OLAY ${type.toUpperCase()} (${src}): ${core}`);
+  // START/STOP sessiz, uyarılar sesli
+  pushNote(`${hhmm(t)} — ${core}`, type === 'alert');
+}
+function alertUser(core) { recordEvent('alert', 'sistem', core); toast(core, 8000); }
+function recordStop(src) {
+  if (stopRecorded) return;
+  stopRecorded = true; cooling = true;
+  recordEvent('stop', src, `Ortam ${fmtT(last?.roomTemp)}°C, Webasto durduruldu.`);
+}
+function trackTransitions(s) {
+  const running = !isIdle(s);
+  if (prevRunning === null) { prevRunning = running; stopRecorded = false; cooling = false; return; }
+  if (!prevRunning && running) {
+    const mine = intent && intent.type === 'start' && Date.now() - intent.t < 150000;
+    recordEvent('start', mine ? intent.src : 'cihaz', `Ortam ${fmtT(s.roomTemp)}°C, Webasto çalıştırıldı.`);
+    stopRecorded = false; cooling = false; intent = null;
+  } else if (prevRunning && !running) {
+    if (!stopRecorded) recordStop('cihaz');   // kumandadan veya cihazdan durdurulmuş
+    cooling = false; stopRecorded = false;
+  }
+  prevRunning = running;
+}
+function checkVoltage(s) {
+  const running = !isIdle(s);
+  // Yalnızca ısıtıcı çalışırken uyar; kapalıyken ve soğutmada sadece göster.
+  if (running && !cooling && s.voltage < LOW_VOLT) {
+    lowSince ??= Date.now();
+    if (Date.now() - lowSince >= 30000 && Date.now() - lastLowAlert > 1800000) {
+      lastLowAlert = Date.now();
+      alertUser(`Akü gerilimi düşük: ${fmtT(s.voltage)} V. Cihaz yaklaşık 10,8 V’ta kesilir.`);
+    }
+  } else lowSince = null;
+}
+
+/* ---------- Bluetooth ---------- */
 const ble = new HeatGenieBLE(log,
-  (willReconnect)=>{
-    lastUpdate=0;
-    if(willReconnect){heater='unknown';if(cfg.auto){$('autoReason').textContent='Bağlantı koptu, yeniden bağlanılıyor… (otomatik kontrol çalışmıyor)';notify('Bluetooth bağlantısı koptu. Otomatik kontrol çalışmıyor; ısıtıcı kendi ayarıyla çalışır.');}render();return;}
-    mode='none';heater='unknown';manualArmed=false;targetTestConfirmed=false;cfg.auto=false;engine.reset();releaseWake();stopSince=null;save();render();},
-  status=>{
-    actualRoom=status.roomTemp;
-    caseTemp=status.caseTemp;
-    voltage=status.voltage;
-    targetOnDevice=status.target;
-    actualFan=status.fan;
-    actualPump=status.pump;
-    actualGlow=status.glow;
-    actualState=status.stateCode;
-    actualError=status.errorFlags;
-    lastUpdate=Date.now();
+  willReconnect => {
+    lastAt = 0;
+    if (willReconnect) {
+      if (cfg.auto) alertUser('Bluetooth bağlantısı koptu. Otomatik kontrol ÇALIŞMIYOR; ısıtıcı kendi ayarıyla çalışır.');
+      else toast('Bağlantı koptu, yeniden bağlanılıyor…');
+    } else { prevRunning = null; if (cfg.auto) alertUser('Bluetooth bağlantısı kapandı. Otomatik kontrol çalışmıyor.'); }
     render();
-    autoStep(status);
-  });
-ble.onReconnect=()=>{log('Yeniden bağlandı; telemetri bekleniyor.');render();};
-ble.onGiveUp=()=>{mode='none';heater='unknown';manualArmed=false;cfg.auto=false;engine.reset();releaseWake();save();notify('Yeniden bağlanılamadı; otomatik kontrol kapatıldı. Isıtıcıyı kontrol edin.');render();};
-const save=()=>{localStorage.setItem('webasto-v3',JSON.stringify(cfg));};
-const fresh=()=>mode==='demo' || (mode==='ble' && Date.now()-lastUpdate<20000);
-const ready=()=>mode==='demo' || (mode==='ble' && manualArmed && ble.canControl && fresh());
-const nameOf = {'unknown':'Durum bilinmiyor','off':'Kapalı','on':'Çalışıyor','starting':'Başlatılıyor','stopping':'Soğutma / CLEAR','fault':'Hata'};
-function render(){
- $('startValue').textContent=cfg.start+' °C';$('stopValue').textContent=cfg.stop+' °C';
- $('targetValue').textContent=(mode==='ble'?(targetOnDevice??'—'):cfg.target)+' °C'; $('autoToggle').checked=cfg.auto;
- $('stopDelay').value=cfg.stopDelay;$('restartDelay').value=cfg.restartDelay;
- $('connectionBadge').textContent=mode==='demo'?'DEMO':mode==='ble'?'Bluetooth bağlı':'Bağlı değil';
- $('connectionBadge').className='pill '+(mode==='demo'?'test':mode==='ble'?'on':'offline');
- $('heaterStatus').textContent=mode==='ble' && actualState !== null ? (actualError?'Hata bayrağı var':(actualFan||actualPump?'Aktivite algılandı':'Durum kodu alındı')):nameOf[heater];
- $('heaterSubstatus').textContent=mode==='demo'?'Simüle edilen ısıtıcı':mode==='ble'?(actualState===null?'Doğrulanmış 3A00 paketi bekleniyor':`Durum adımı: ${(actualState&0x0f)} · Mod ${ble.runMode??'—'} · CRC doğrulandı · Manuel test ${manualArmed?'açık':'kapalı'}`):'Cihaz verisi bekleniyor';
- $('deviceName').textContent=mode==='demo'?'Simülasyon':mode==='ble'?(ble.device?.name||'Bağlı cihaz'):'Cihaz seçilmedi';
- $('roomTemp').textContent=mode==='demo'?demoRoom.toFixed(1):mode==='ble' && actualRoom!==null?actualRoom.toFixed(1):'—';
- $('physicalTarget').textContent=(mode==='demo'||mode==='ble')?(targetOnDevice??'—'):'—';
- $('caseTemp').textContent=caseTemp===null?'—':caseTemp.toFixed(1);
- $('voltage').textContent=voltage===null?'—':voltage.toFixed(1);
- $('fan').textContent=mode==='demo'?(heater==='on'?'3':'Kapalı'):mode==='ble' && actualFan!==null?(actualFan?'Açık':'Kapalı'):'—';
- $('pump').textContent=mode==='demo'?(heater==='on'?'Açık':'Kapalı'):mode==='ble' && actualPump!==null?`${actualPump?'Açık':'Kapalı'} / ${actualGlow?'Açık':'Kapalı'}`:'—';
- $('connectBtn').disabled=mode==='ble'||busy;
- $('disconnectBtn').disabled=mode!=='ble';
- $('demoBtn').textContent=mode==='demo'?'Demoyu kapat':'Demo aç';
- $('startBtn').disabled=!ready() || busy || (mode==='ble' && (!targetTestConfirmed || ![0,5].includes((actualState??255)&0x0f) || ble.runMode!==0 || (Date.now()-ble.lastStartAt<60000))) || (mode==='demo' && heater==='on');
- $('restoreModeBtn').disabled=!ready() || busy || mode!=='ble' || ble.runMode===0 || (actualState!==null && ![0,5].includes(actualState&0x0f)) || Boolean(actualFan||actualPump||actualGlow);
- $('stopBtn').disabled=mode==='ble' ? (!ble.canStop || (actualState!==null && [0,5].includes(actualState&0x0f) && Date.now()-ble.lastStartAt>90000)) : (!ready() || busy || mode!=='demo' || heater==='off'); // STOP gerçek cihazda hedef testi, hata bayrağı veya telemetri tazeliğine bağlı değildir
- $('targetMinus').disabled=!ready() || busy || cfg.auto || (mode==='ble' && (targetOnDevice===null || targetOnDevice<=10));
- $('targetPlus').disabled=!ready() || busy || cfg.auto || (mode==='ble' && (targetOnDevice===null || targetOnDevice>=40));
- $('leaveBtn').disabled=mode!=='demo' || busy; // Karavandan ayrıldım otomatik komutu bu test sürümünde gerçek cihazda KAPALI
- $('manualTestArm').checked=manualArmed;
- $('manualTestArm').disabled=mode!=='ble' || busy;
- $('manualTestStatus').textContent= mode==='ble' ? (manualArmed ? (targetTestConfirmed?'Hedef testi onaylandı. START/STOP tek seferlik manuel testlere açık.':'Önce hedef sıcaklığı +1/−1 deneyip cihazdan geri okumayı doğrula.'):'Gerçek kontrol kilitli. Onay kutusunu işaretle.') : 'Yalnızca Bluetooth bağlantısı kurulduktan sonra manuel test açılabilir.';
- $('readBtn').disabled=mode!=='ble';
- $('modeNotice').innerHTML=mode==='demo'?'<strong>DEMO MODU.</strong> Ekrandaki komutlar sanaldır.':mode==='ble'?'<strong>V3.9 OTOMATİK TERMOSTAT.</strong> Gerçek cihazda otomatik START/STOP test edilebilir (onay kutusu + açık onay gerekir). Sayfa ve bilgisayar açık, Chrome ekranı uyumasın.':'<strong>Gerçek cihaza bağlı değil.</strong> Demo veya Bluetooth tanılama kullan.';
- $('freshness').textContent=mode==='demo'?'Demo verisi':mode==='ble'?(lastUpdate?('Gerçek veri · '+(fresh()?'güncel':'eski')):'Paket bekleniyor'):'Veri yok';
- if(mode==='ble') {$('autoToggle').disabled=!manualArmed||busy||!(ble.connected||ble.reconnecting);if(!cfg.auto)$('autoReason').textContent=manualArmed?'Otomatik mod kapalı.':'Otomatik mod için önce manuel test onay kutusunu işaretle.';}
- else {$('autoToggle').disabled=(mode!=='demo'); if(!cfg.auto) $('autoReason').textContent='Otomatik mod kapalı.';}
-}
-async function command(what,arg,automatic=false){
- const stopLive=(what==='stop'&&mode==='ble');
- if(stopLive?!ble.canStop:(!ready() || busy)) {log('Komut reddedildi: Gerçek kontrol hazır değil.');return;}
- busy=true;render();
- try {
-   if(mode==='demo') {
-     if(what==='start'){heater='starting';log((automatic?'OTOMATİK ':'')+'Demo START'); await new Promise(r=>setTimeout(r,650));heater='on';}
-     if(what==='stop'){heater='stopping';log((automatic?'OTOMATİK ':'')+'Demo STOP / CLEAR');await new Promise(r=>setTimeout(r,650));heater='off';lastStoppedAt=Date.now();stopSince=null;}
-     if(what==='target') {targetOnDevice=arg;log('Demo hedef gönderildi: '+arg+' °C');}
-     lastUpdate=Date.now();
-   } else {
-     const confirmation = what==='restore-mode' ? 'Cihaz tamamen durmuşken eski Otomatik/Sıcaklık modu (0) seçilecek. Onaylıyor musun?' : what==='start' ? `V3.9 Dizi C START: MOD 0 korunacak, cihazın güncel hedefi ${targetOnDevice} °C B4 alanında gönderilecek (CRC otomatik). Yalnızca TEK komut. Cihaz durmuş, havalandırma ve CO alarmı hazır, sen yanında mısın?` : what==='stop' ? 'Bu gerçek STOP/CLEAR denemesidir. Isıtıcının normal soğutmasını gözlemlemelisin. Devam?' : `Gerçek ısıtıcı hedefi ${arg} °C yapılmaya çalışılacak. Onaylıyor musun?`;
-     if(!window.confirm(confirmation)){log('Kullanıcı gerçek komutu iptal etti.');return;}
-     let result;
-     if(what==='start') result=await ble.start();
-     else if(what==='restore-mode'){const restored=await ble.restoreTemperatureMode();result={transportAccepted:true,confirmed:restored,kind:'mode'};}
-     else if(what==='stop') result=await ble.stop();
-     else if(what==='target') result=await ble.target(arg);
-     if(result?.confirmed && what==='target'){targetTestConfirmed=true;cfg.target=arg;save();}
-     log(result?.modeVerified===false ? 'SONUÇ START: Ön koşullar doğrulanmadı, START gönderilmedi.' : result?.confirmed ? `SONUÇ ${what}: ${what==='target'?'Cihaz ayarı geri okundu':'Durum değişimi algılandı (tam işlem doğrulanmadı)'}.` : `SONUÇ ${what}: 3A01 yazma başarılı, ancak cihaz etkisi DOĞRULANMADI.`);
-     $('lastTestResult').textContent=result?.modeVerified===false?'Başlatma ön koşulu doğrulanmadı; START gönderilmedi.':result?.confirmed ? `${what.toUpperCase()}: ${what==='target'?'Hedef cihazdan geri okundu':'Cihaz durum değişikliği görüldü'}` : `${what.toUpperCase()}: GATT yazıldı ama cihazda sonuç görülmedi.`;
-   }
- } catch(e) { log('Komut başarısız: '+e.message);$('autoReason').textContent=e.message; }
- finally {busy=false;render();}
-}
-const changeSettings=(update)=>{cfg=update(cfg);save();stopSince=null;render();};
-$('startMinus').onclick=()=>changeSettings(c=>changeStart(c,-1));
-$('startPlus').onclick=()=>changeSettings(c=>changeStart(c,1));
-$('stopMinus').onclick=()=>{changeSettings(c=>changeStop(c,-1));if(cfg.auto){if(mode==='demo')command('target',cfg.target);else targetSyncTries=0;}};
-$('stopPlus').onclick=()=>{changeSettings(c=>changeStop(c,1));if(cfg.auto){if(mode==='demo')command('target',cfg.target);else targetSyncTries=0;}};
-$('targetMinus').onclick=()=>{const next=clamp((mode==='ble'?targetOnDevice:cfg.target)-1,10,40);if(mode==='demo'){cfg.target=next;save();}render();command('target',next);};
-$('targetPlus').onclick=()=>{const next=clamp((mode==='ble'?targetOnDevice:cfg.target)+1,10,40);if(mode==='demo'){cfg.target=next;save();}render();command('target',next);};
-$('stopDelay').onchange=e=>changeSettings(c=>({...c,stopDelay:Number(e.target.value)}));
-$('restartDelay').onchange=e=>changeSettings(c=>({...c,restartDelay:Number(e.target.value)}));
-$('autoToggle').onchange=async e=>{
- if(mode==='ble'){
-  if(e.target.checked){
-   if(!manualArmed){e.target.checked=false;log('Önce manuel test onay kutusunu işaretle.');return;}
-   if(!window.confirm(`OTOMATİK KONTROL: Oda ≥ ${cfg.stop} °C olunca STOP, ≤ ${cfg.start} °C olunca START gönderilecek. Isıtıcı sen yokken kendiliğinden açılıp kapanabilir. Çalışan CO alarmı, havalandırma ve cihaz güvenliği sende olmalı. Etkinleştirilsin mi?`)){e.target.checked=false;return;}
-   requestNotify();await requestWake();
-   cfg=updateAuto(cfg,true);engine.reset();targetSyncTries=0;save();log('Otomatik termostat AÇILDI (gerçek cihaz).');
-  } else {cfg=updateAuto(cfg,false);engine.reset();releaseWake();save();log('Otomatik termostat KAPATILDI.');}
-  render();return;
- }
- if(mode!=='demo') {e.target.checked=false;return;}
- changeSettings(c=>updateAuto(c,e.target.checked));
- if(cfg.auto)command('target',cfg.stop); // STOP ile HeatGenie hedefini eşitle.
-};
-$('startBtn').onclick=()=>{if(cfg.auto){cfg.auto=false;save();}command('start');};
-$('restoreModeBtn').onclick=()=>command('restore-mode');
-$('stopBtn').onclick=()=>{if(cfg.auto){cfg.auto=false;save();}command('stop');};
-$('leaveBtn').onclick=async()=>{cfg.auto=false;save();stopSince=null;render();await command('stop');};
-$('manualTestArm').onchange=e=>{manualArmed=Boolean(e.target.checked) && mode==='ble';if(!manualArmed)targetTestConfirmed=false;log('Manuel komut testi '+(manualArmed?'onaylandı':'kilitlendi'));render();};
-$('demoBtn').onclick=()=>{
- manualArmed=false;targetTestConfirmed=false;
- if(mode==='ble')ble.disconnect();
- cfg.auto=false;save();stopSince=null;lastStoppedAt=null;busy=false;error=false;
- if(mode==='demo'){mode='none';heater='unknown';caseTemp=null;voltage=null;targetOnDevice=null;log('Demo kapatıldı.');}
- else {mode='demo';heater='off';demoRoom=19.2;targetOnDevice=cfg.target;caseTemp=28;voltage=13.2;lastUpdate=Date.now();log('Demo başlatıldı.');}
- render();
-};
-$('connectBtn').onclick=async()=>{
- if(mode==='demo'){$('demoBtn').click();}
- cfg.auto=false;save();manualArmed=false;targetTestConfirmed=false;busy=true;render();
- try {const name=await ble.connect();mode='ble';heater='unknown';log('Bağlantı tamamlandı: '+name+'. 3A00 telemetri açık; manuel komut için açık kullanıcı onayı gerekir.');}
- catch(e){mode='none';log('Bağlantı hatası: '+e.message);alert('Bluetooth bağlantısı kurulamadı: '+e.message);}
- busy=false;render();
-};
-$('disconnectBtn').onclick=()=>{manualArmed=false;targetTestConfirmed=false;cfg.auto=false;engine.reset();releaseWake();save();ble.disconnect();mode='none';heater='unknown';render();};
-$('readBtn').onclick=()=>ble.read();
-$('exportBtn').onclick=()=>{
- const blob=new Blob([logs.join('\n')],{type:'text/plain;charset=utf-8'});
- const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='webasto-v3-tani.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
-};
-/* ---------- V3.9 gerçek cihaz otomatik termostat ---------- */
-function notify(msg){
-  log('UYARI: '+msg);
-  document.title='⚠ '+msg.slice(0,40);
-  try{if('Notification' in window && Notification.permission==='granted')new Notification('Webasto',{body:msg});}catch{}
-}
-function requestNotify(){try{if('Notification' in window && Notification.permission==='default')Notification.requestPermission();}catch{}}
-async function requestWake(){try{if(navigator.wakeLock&&!wakeLock){wakeLock=await navigator.wakeLock.request('screen');wakeLock.addEventListener('release',()=>{wakeLock=null;});log('Ekran uyku kilidi alındı (bilgisayar ekranı uyumaz).');}}catch(e){log('Ekran uyku kilidi alınamadı: '+e.message);}}
-function releaseWake(){try{wakeLock?.release();}catch{}wakeLock=null;}
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&cfg.auto&&mode==='ble')requestWake();});
+  },
+  onStatus);
+ble.onReconnect = () => { toast('Yeniden bağlandı'); prevRunning = null; render(); };
+ble.onGiveUp = () => { if (cfg.auto) alertUser('Yeniden bağlanılamadı. Otomatik kontrol çalışmıyor; ısıtıcıyı kontrol edin.'); render(); };
 
-async function autoCommand(what){
-  if(busy){log('Otomatik '+what+' ertelendi: önceki komut sürüyor.');engine.sendFailed(what);return;}
-  busy=true;render();
-  try{
-    const r=what==='start'?await ble.start():await ble.stop();
-    log(`OTOMATİK ${what.toUpperCase()}: ${r?.confirmed?'durum değişimi görüldü':'durum değişimi henüz görülmedi'}.`);
-    $('lastTestResult').textContent=`OTOMATİK ${what.toUpperCase()}: ${r?.confirmed?'durum değişikliği görüldü':'GATT yazıldı, sonuç doğrulanamadı'}`;
-  }catch(e){log('Otomatik '+what+' başarısız: '+e.message);engine.sendFailed(what);}
-  finally{busy=false;render();}
+function onStatus(s) {
+  last = s; lastAt = Date.now();
+  const running = !isIdle(s);
+  trackTransitions(s);
+  checkVoltage(s);
+  if (Date.now() - lastSampleAt >= 60000) { lastSampleAt = Date.now(); history.addSample(Date.now(), s.roomTemp, s.voltage, running); }
+  autoStep(s);
+  render();
 }
-async function syncTarget(s){
-  const wanted=cfg.stop;
-  if(s.target===wanted){targetSyncTries=0;return;}
-  if(busy||targetSyncTries>=3||Date.now()-lastTargetSentAt<20000||!ble.canControl)return;
-  targetSyncTries++;lastTargetSentAt=Date.now();busy=true;render();
-  try{const r=await ble.target(wanted);if(r?.confirmed){targetTestConfirmed=true;cfg.target=wanted;save();}}
-  catch(e){log('Hedef eşitleme başarısız: '+e.message);}
-  finally{busy=false;render();}
-}
-function autoStep(status){
-  if(!cfg.auto||mode!=='ble'||!manualArmed)return;
-  engine.cfg={...cfg,maxStartsPerHour:4};
-  const d=engine.evaluate(status,Date.now());
-  $('autoReason').textContent=d.reason;
-  if(d.alert)notify(d.alert);
-  if(d.disableAuto){cfg=updateAuto(cfg,false);engine.reset();releaseWake();save();log('Otomatik kontrol kendini kapattı: '+d.reason);render();return;}
-  if(d.action==='start'){log('OTOMATİK KARAR: '+d.reason);autoCommand('start');}
-  else if(d.action==='stop'){log('OTOMATİK KARAR: '+d.reason);autoCommand('stop');}
-  else syncTarget(status);
-}
-// Telemetri 20 sn gelmezse salt-okunur durum isteği gönder (yalnızca sayfa açıkken).
-setInterval(()=>{if(mode==='ble'&&ble.connected&&ble.writeChar&&Date.now()-(ble.lastStatusAt||0)>20000)ble.requestStatus();},15000);
 
-setInterval(()=>{
- if(mode!=='demo')return;
- // Demo yalnızca görünüş ve algoritma testi içindir.
- demoRoom=clamp(demoRoom+(heater==='on'?.13:-.035),4,45);
- caseTemp=heater==='on'?clamp(caseTemp+.8,28,78):clamp(caseTemp-.25,25,78);
- lastUpdate=Date.now();
- const d=thermostatDecision({cfg, now:Date.now(),running:heater,room:demoRoom,isFresh:fresh(),stopSince,lastStoppedAt,error});
- stopSince=d.stopSince;
- $('autoReason').textContent=d.reason;
- if(d.command && !busy)command(d.command,undefined,true);
- render();
- $('autoReason').textContent=d.reason;
-},1000);
-window.addEventListener('pagehide',()=>{ // Kapandığında otomatik komut garantisi yok; güç kesme uygulanmaz.
- cfg.auto=false;save();
+/* ---------- Otomatik mod ---------- */
+async function autoCommand(what) {
+  if (busy) { engine.sendFailed(what); return; }
+  busy = true; intent = {type: what, src: 'otomatik', t: Date.now()}; render();
+  try {
+    if (what === 'stop') { await ble.stop(); recordStop('otomatik'); }
+    else await ble.start();
+  } catch (e) { engine.sendFailed(what); intent = null; log(`Otomatik ${what} başarısız: ${e.message}`); toast(`Otomatik ${what.toUpperCase()} gönderilemedi: ${e.message}`, 6000); }
+  finally { busy = false; render(); }
+}
+async function syncTarget(s) {
+  if (s.target === cfg.stop) { targetSyncTries = 0; return; }
+  if (busy || targetSyncTries >= 3 || Date.now() - lastTargetSentAt < 20000 || !ble.canControl) return;
+  targetSyncTries++; lastTargetSentAt = Date.now(); busy = true;
+  try { await ble.target(cfg.stop); log(`Webasto hedefi ${cfg.stop} °C olarak güncellendi.`); }
+  catch (e) { log('Hedef eşitleme başarısız: ' + e.message); }
+  finally { busy = false; render(); }
+}
+function autoStep(s) {
+  if (!cfg.auto) { autoReasonText = ''; return; }
+  engine.cfg = {...cfg, auto: true, maxStartsPerHour: 4};
+  const d = engine.evaluate(s, Date.now());
+  autoReasonText = d.reason;
+  if (d.alert) alertUser(d.alert);
+  if (d.disableAuto) { cfg.auto = false; engine.reset(); saveCfg(); updateWake(); toast('Güvenlik nedeniyle otomatik mod kapandı: ' + d.reason, 9000); return; }
+  if (d.action === 'start') autoCommand('start');
+  else if (d.action === 'stop') autoCommand('stop');
+  else syncTarget(s);
+}
+
+/* ---------- Manuel komutlar ---------- */
+const nightOn = () => document.body.classList.contains('night');
+async function manualStart() {
+  if (busy) return;
+  if (!nightOn() && !window.confirm('Isıtıcı başlatılsın mı? Cihaz başında, havalandırma ve CO alarmı hazır mı?')) return;
+  busy = true; intent = {type: 'start', src: 'manuel', t: Date.now()}; engine.markStart(Date.now()); render();
+  try {
+    const r = await ble.start();
+    if (!r?.confirmed) { toast('START gönderildi ama ısıtıcı henüz başlamadı.', 6000); log('Manuel START: durum değişimi görülmedi.'); }
+  } catch (e) { engine.sendFailed('start'); intent = null; toast('START gönderilemedi: ' + e.message, 6000); }
+  finally { busy = false; render(); }
+}
+async function manualStop() {
+  const wasAuto = cfg.auto;
+  if (wasAuto) { cfg.auto = false; engine.reset(); saveCfg(); updateWake(); }
+  try {
+    await ble.stop(); engine.markStop(Date.now()); recordStop('manuel');
+    toast(wasAuto ? 'STOP gönderildi. Otomatik mod kapatıldı.' : 'STOP gönderildi.');
+  } catch (e) { toast('STOP gönderilemedi: ' + e.message + (wasAuto ? ' (Otomatik mod kapatıldı)' : ''), 7000); }
+  render();
+}
+
+/* ---------- Ekran uyku kilidi ---------- */
+async function requestWake() {
+  try { if (navigator.wakeLock && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } }
+  catch (e) { log('Ekran uyku kilidi alınamadı: ' + e.message); }
+}
+function releaseWake() { try { wakeLock?.release(); } catch { /* yok say */ } wakeLock = null; }
+function updateWake() { if (cfg.auto || cfg.night) requestWake(); else releaseWake(); }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') updateWake(); else history.save(); });
+window.addEventListener('pagehide', () => history.save());
+
+/* ---------- Arayüz ---------- */
+function connLabel() {
+  if (ble.connected) return fresh() || !last ? ['Bağlı', 'ok'] : ['Bağlı · veri gecikti', 'warn'];
+  if (ble.reconnecting) return ['Yeniden bağlanıyor', 'warn'];
+  return everConnected ? ['Bağlantı kesildi', 'bad'] : ['Bağlı değil', 'bad'];
+}
+function lastEvent(type) { for (let i = history.events.length - 1; i >= 0; i--) if (history.events[i].type === type) return history.events[i]; return null; }
+function evText(label, ev) {
+  if (!ev) return `${label}: —`;
+  const d = new Date(ev.t), today = new Date();
+  const day = d.toDateString() === today.toDateString() ? '' : `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')} `;
+  return `${label}: ${day}${hhmm(ev.t)}`;
+}
+function banner(text, cls, btnText, btnFn) {
+  const d = document.createElement('div'); d.className = 'banner ' + (cls || ''); const sp = document.createElement('span'); sp.textContent = text; d.appendChild(sp);
+  if (btnText) { const b = document.createElement('button'); b.textContent = btnText; b.onclick = btnFn; d.appendChild(b); }
+  return d;
+}
+function render() {
+  const [cl, cc] = connLabel();
+  const pill = $('connState'); pill.textContent = cl; pill.className = 'pill ' + cc;
+  $('roomTemp').textContent = last ? fmtT(last.roomTemp) : '--.-';
+  document.title = last ? `${fmtT(last.roomTemp)}° Karavan Webasto` : 'Karavan Webasto';
+  const st = $('heaterState');
+  if (!last) { st.textContent = 'Veri bekleniyor'; st.className = 'state'; }
+  else if (isIdle(last)) { st.textContent = 'Kapalı'; st.className = 'state'; }
+  else { st.textContent = cooling ? 'Soğutuyor (durduruluyor)' : 'Çalışıyor'; st.className = 'state run'; }
+  const bat = $('battery');
+  if (last) { bat.textContent = `Akü ${fmtT(last.voltage)} V`; bat.className = (!isIdle(last) && !cooling && last.voltage < LOW_VOLT) ? 'low' : ''; } else { bat.textContent = 'Akü —'; bat.className = ''; }
+  $('lastStart').textContent = evText('Son START', lastEvent('start'));
+  $('lastStop').textContent = evText('Son STOP', lastEvent('stop'));
+  $('startVal').textContent = cfg.start; $('stopVal').textContent = cfg.stop;
+  $('autoToggle').checked = cfg.auto;
+  let line = 'Kapalı';
+  if (cfg.auto) line = controlOk() ? (autoReasonText || 'Açık') : 'Açık — kontrol ÇALIŞMIYOR';
+  $('autoLine').textContent = line;
+  // uyarı şeritleri
+  const bn = $('banners'); bn.replaceChildren();
+  if (last?.errorFlags) bn.appendChild(banner(`Cihaz hata bildiriyor (0x${last.errorFlags.toString(16).toUpperCase()}). Kumandadan kontrol edin.`));
+  if (cfg.auto && !controlOk()) bn.appendChild(banner(`Otomatik mod AÇIK ama kontrol çalışmıyor: ${ble.reconnecting ? 'yeniden bağlanılıyor' : (ble.connected ? 'veri gecikti' : 'Bluetooth bağlantısı yok')}.`));
+  if (last && ble.connected && ((last.flags >> 5) & 3) !== 0) bn.appendChild(banner(`Cihaz Mod ${(last.flags >> 5) & 3}: otomatik START çalışmaz.`, 'warn', 'Mod 0’a dön', () => ble.restoreTemperatureMode().catch(e => toast(e.message, 6000))));
+  $('startBtn').disabled = !ble.canControl || busy || (last && !isIdle(last)) || Date.now() - ble.lastStartAt < 60000;
+  $('stopBtn').disabled = !ble.canStop || (last && isIdle(last) && Date.now() - ble.lastStartAt > 90000);
+  $('connectBtn').hidden = ble.connected || ble.reconnecting;
+  $('nightExit').hidden = !cfg.night; $('holdHint').hidden = !cfg.night;
+  $('notifyToggle').checked = cfg.notify;
+  $('selStopDelay').value = String(cfg.stopDelay); $('selMinRun').value = String(cfg.minRun); $('selRestart').value = String(cfg.restartDelay);
+  document.body.classList.toggle('night', cfg.night);
+  if (tab === 'history') renderHistory();
+}
+
+/* ---------- Geçmiş sekmesi ---------- */
+function bounds() {
+  const now = Date.now();
+  if (range === 'today') { const d = new Date(); d.setHours(0, 0, 0, 0); return [d.getTime(), now]; }
+  return [now - Number(range) * 3600000, now];
+}
+function renderHistory() {
+  const [from, to] = bounds();
+  const s = history.stats(from, to);
+  $('sStarts').textContent = s.starts; $('sStops').textContent = s.stops; $('sRun').textContent = fmtDuration(s.runMs);
+  $('sRange').textContent = s.min === null ? '—' : `${fmtT(s.min)}–${fmtT(s.max)}°`;
+  const ul = $('events'); ul.replaceChildren();
+  const evs = history.eventsBetween(from, to).slice().reverse().slice(0, 150);
+  if (!evs.length) { const li = document.createElement('li'); li.textContent = 'Bu aralıkta olay yok.'; ul.appendChild(li); }
+  for (const e of evs) {
+    const li = document.createElement('li'); if (e.type === 'alert') li.className = 'alert';
+    const d = new Date(e.t), today = new Date();
+    const day = d.toDateString() === today.toDateString() ? '' : `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')} `;
+    li.textContent = `${day}${hhmm(e.t)} — ${e.text} `;
+    if (e.src && e.type !== 'alert') { const sm = document.createElement('small'); sm.textContent = `(${e.src})`; li.appendChild(sm); }
+    ul.appendChild(li);
+  }
+  drawChart(history.samplesBetween(from, to), from, to);
+}
+function drawChart(samples, from, to) {
+  const svg = $('chart'); const NS = 'http://www.w3.org/2000/svg';
+  svg.replaceChildren();
+  const W = 600, H = 220, L = 38, R = 8, T = 10, B = 24;
+  const mk = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text) e.textContent = text; svg.appendChild(e); return e; };
+  const rooms = samples.map(s => s[1]).filter(v => typeof v === 'number');
+  if (rooms.length < 2) { mk('text', {x: W / 2, y: H / 2, 'text-anchor': 'middle', style: 'fill:var(--muted);font-size:14px'}, 'Henüz grafik verisi yok'); return; }
+  const lo = Math.floor(Math.min(...rooms, cfg.start) - 1), hi = Math.ceil(Math.max(...rooms, cfg.stop) + 1);
+  const x = t => L + (t - from) / (to - from) * (W - L - R), y = v => T + (hi - v) / (hi - lo) * (H - T - B);
+  for (let v = lo; v <= hi; v += Math.max(1, Math.ceil((hi - lo) / 5))) {
+    mk('line', {x1: L, x2: W - R, y1: y(v), y2: y(v), style: 'stroke:var(--line);stroke-width:1'});
+    mk('text', {x: L - 6, y: y(v) + 4, 'text-anchor': 'end', style: 'fill:var(--muted);font-size:11px'}, v + '°');
+  }
+  for (let i = 0; i <= 4; i++) { const t = from + (to - from) * i / 4; mk('text', {x: x(t), y: H - 6, 'text-anchor': i === 0 ? 'start' : (i === 4 ? 'end' : 'middle'), style: 'fill:var(--muted);font-size:11px'}, hhmm(t)); }
+  // çalışma aralıkları
+  for (let i = 0; i < samples.length; i++) if (samples[i][3]) { const t0 = samples[i][0], t1 = Math.min(i + 1 < samples.length ? samples[i + 1][0] : t0 + 60000, t0 + 120000); mk('rect', {x: x(t0), y: T, width: Math.max(1, x(t1) - x(t0)), height: H - T - B, style: 'fill:var(--warn);opacity:.18'}); }
+  mk('line', {x1: L, x2: W - R, y1: y(cfg.start), y2: y(cfg.start), style: 'stroke:var(--ok);stroke-dasharray:5 4;stroke-width:1.5'});
+  mk('line', {x1: L, x2: W - R, y1: y(cfg.stop), y2: y(cfg.stop), style: 'stroke:var(--bad);stroke-dasharray:5 4;stroke-width:1.5'});
+  let d = '', prevT = null;
+  for (const s of samples) { if (typeof s[1] !== 'number') continue; d += (prevT === null || s[0] - prevT > 300000 ? 'M' : 'L') + x(s[0]).toFixed(1) + ' ' + y(s[1]).toFixed(1) + ' '; prevT = s[0]; }
+  mk('path', {d, style: 'fill:none;stroke:var(--acc);stroke-width:2;stroke-linejoin:round'});
+}
+
+/* ---------- Olay bağlama ---------- */
+function bindAction(btn, fn) {
+  let timer = null;
+  btn.addEventListener('click', () => { if (!nightOn()) fn(); });
+  btn.addEventListener('pointerdown', () => { if (!nightOn()) return; btn.classList.add('holding'); timer = setTimeout(() => { timer = null; btn.classList.remove('holding'); fn(); }, 1500); });
+  const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } btn.classList.remove('holding'); };
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => btn.addEventListener(ev, cancel));
+}
+function bindHold(btn, ms, fn) {
+  let timer = null;
+  btn.addEventListener('pointerdown', () => { btn.classList.add('holding'); timer = setTimeout(() => { timer = null; btn.classList.remove('holding'); fn(); }, ms); });
+  const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } btn.classList.remove('holding'); };
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => btn.addEventListener(ev, cancel));
+}
+function setTab(name) {
+  tab = name;
+  for (const t of ['home', 'history', 'details']) $('tab-' + t).hidden = t !== name;
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  if (name === 'details') { $('log').textContent = logLines.join('\n'); }
+  render();
+}
+function download(name, text, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], {type})); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
+const changed = () => { saveCfg(); render(); };
+
+$('startMinus').onclick = () => { cfg.start = clamp(cfg.start - 1, 10, 38); changed(); };
+$('startPlus').onclick = () => { cfg.start = clamp(cfg.start + 1, 10, 38); if (cfg.stop < cfg.start + 2) cfg.stop = cfg.start + 2; changed(); };
+$('stopMinus').onclick = () => { cfg.stop = clamp(cfg.stop - 1, cfg.start + 2, 40); targetSyncTries = 0; changed(); };
+$('stopPlus').onclick = () => { cfg.stop = clamp(cfg.stop + 1, cfg.start + 2, 40); targetSyncTries = 0; changed(); };
+$('autoToggle').onchange = async e => {
+  if (e.target.checked) {
+    const note = controlOk() ? '' : '\n\n(Şu an Bluetooth bağlantısı yok; bağlanınca devreye girer.)';
+    if (!window.confirm(`Otomatik mod açılsın mı?\n\nOda ≤ ${cfg.start} °C olunca START, ≥ ${cfg.stop} °C olunca STOP gönderilir. Isıtıcı sen yokken kendiliğinden açılıp kapanabilir. CO alarmı, havalandırma ve cihaz güvenliği sende olmalı.${note}`)) { e.target.checked = false; return; }
+    await ensureNotifyPermission();
+    cfg.auto = true; engine.reset(); targetSyncTries = 0; log('Otomatik mod AÇILDI.');
+  } else { cfg.auto = false; engine.reset(); log('Otomatik mod KAPATILDI.'); }
+  saveCfg(); updateWake(); render();
+};
+bindAction($('startBtn'), manualStart);
+bindAction($('stopBtn'), manualStop);
+$('connectBtn').onclick = async () => {
+  try { const name = await ble.connect(); everConnected = true; cfg.deviceId = ble.device?.id ?? null; saveCfg(); log('Bağlandı: ' + name); }
+  catch (e) { if (e.name !== 'NotFoundError') toast('Bağlanılamadı: ' + e.message, 6000); log('Bağlantı hatası: ' + e.message); }
+  render();
+};
+$('nightBtn').onclick = () => { cfg.night = true; saveCfg(); setTab('home'); updateWake(); render(); };
+bindHold($('nightExit'), 1500, () => { cfg.night = false; saveCfg(); updateWake(); render(); });
+$('tabs').addEventListener('click', e => { const b = e.target.closest?.('button[data-tab]'); if (b) setTab(b.dataset.tab); });
+$('range').addEventListener('click', e => {
+  const b = e.target.closest?.('button[data-h]'); if (!b) return;
+  range = b.dataset.h; document.querySelectorAll('#range button').forEach(x => x.classList.toggle('on', x === b)); render();
 });
-log('V3.9 DİZİ C: Kullanıcının RE5011 üzerinde START verdiğini doğruladığı 0x61 / 01 / HEDEF-B4 / 00 biçimi. Hedef canlı 3A00 cihaz verisinden alınır; CRC yeniden hesaplanır. STOP, 10–40°C hedef, Mod 0 korunur. 0x41 ACK ve Adım 5→1 izlenir; otomatik kontrol kapalı.');
-render();
+$('exportBtn').onclick = () => download('webasto-gecmis.csv', history.toCsv(), 'text/csv');
+$('clearBtn').onclick = () => { if (window.confirm('Tüm geçmiş silinsin mi?')) { history.clear(); render(); } };
+$('notifyToggle').onchange = async e => { cfg.notify = e.target.checked; if (cfg.notify) await ensureNotifyPermission(); changed(); };
+$('selStopDelay').onchange = e => { cfg.stopDelay = Number(e.target.value); changed(); };
+$('selMinRun').onchange = e => { cfg.minRun = Number(e.target.value); changed(); };
+$('selRestart').onchange = e => { cfg.restartDelay = Number(e.target.value); changed(); };
+$('mode0Btn').onclick = () => ble.restoreTemperatureMode().then(() => toast('Mod 0 gönderildi.')).catch(e => toast(e.message, 6000));
+$('disconnectBtn').onclick = () => { ble.disconnect(); prevRunning = null; render(); };
+$('logDownload').onclick = () => download('webasto-kayit.txt', logLines.join('\n'), 'text/plain');
+$('logClear').onclick = () => { logLines.length = 0; $('log').textContent = ''; };
+
+/* ---------- Başlangıç ---------- */
+setInterval(() => {
+  if (ble.connected && ble.writeChar && Date.now() - (ble.lastStatusAt || 0) > 20000) ble.requestStatus();
+  render();
+}, 5000);
+(async function init() {
+  render(); updateWake();
+  try {
+    const name = await ble.reconnectKnown(cfg.deviceId);
+    if (name) { everConnected = true; log('Önceki cihaza otomatik bağlanıldı: ' + name); }
+  } catch (e) { log('Otomatik bağlanma yapılamadı: ' + e.message); }
+  render();
+})();
+window.__hg = {ble, engine, history, onStatus, render, get cfg() { return cfg; }, get state() { return {cooling, busy, stopRecorded}; }};

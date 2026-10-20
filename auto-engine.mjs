@@ -2,7 +2,8 @@
  *  Zamanlayıcı kullanmaz: yalnızca yeni durum paketi geldiğinde çağrılır, beklemeler zaman damgasıyla hesaplanır. */
 export class AutoEngine {
   constructor() {
-    this.cfg = {auto:false, start:20, stop:25, stopDelay:30, restartDelay:180, maxStartsPerHour:4};
+    this.cfg = {auto:false, start:20, stop:25, stopDelay:30, restartDelay:180, minRun:600, maxStartsPerHour:4};
+    this.runStart = null;
     this.startHistory = [];
     this.lastStopSentAt = null;
     this.lastStartSentAt = null;
@@ -13,6 +14,9 @@ export class AutoEngine {
     this.stopRetries = 0; this.failedStarts = 0; this.stopAlerted = false; this.limitAlerted = false;
     this.stepAtStop = null; this.stopTookEffect = false;
   }
+  /** Manuel START/STOP da bekleme ve sayaçlara işlensin. */
+  markStart(now) { this.lastStartSentAt = now; this.awaitingRun = true; this.startHistory.push(now); }
+  markStop(now) { this.lastStopSentAt = now; }
   /** Komut gerçekte gönderilemediyse çağrılır; motor "gönderildi" varsaymasın. */
   sendFailed(action) {
     if (action === 'stop') { this.awaitingOff = false; this.stopSince = null; this.lastStopSentAt = null; }
@@ -29,6 +33,7 @@ export class AutoEngine {
     const idle = (step === 0 || step === 5) && !s.fan && !s.pump && !s.glow;
 
     if (idle) {
+      this.runStart = null;
       this.stopSince = null; this.awaitingOff = false; this.stopRetries = 0; this.stopAlerted = false;
       if (this.awaitingRun && this.lastStartSentAt != null) {
         if (now - this.lastStartSentAt < 90000) return D('Ateşleme başlaması bekleniyor');
@@ -53,6 +58,7 @@ export class AutoEngine {
     }
 
     // Çalışıyor / geçiş
+    if (this.runStart == null) this.runStart = now;
     this.awaitingRun = false; this.failedStarts = 0; this.limitAlerted = false;
     if (this.awaitingOff) {
       if (this.stepAtStop != null && step !== this.stepAtStop) this.stopTookEffect = true;
@@ -69,6 +75,8 @@ export class AutoEngine {
       const since = this.stopSince ?? now; this.stopSince = since;
       const waited = now - since;
       if (waited >= cfg.stopDelay * 1000) {
+        const runLeft = (cfg.minRun ?? 0) * 1000 - (now - this.runStart);
+        if (runLeft > 0) return D(`Minimum çalışma süresi: ${Math.ceil(runLeft/60000)} dk kaldı`);
         this.stopSince = null; this.awaitingOff = true; this.stopRetries = 0; this.stopAlerted = false;
         this.stopTookEffect = false; this.stepAtStop = step; this.lastStopSentAt = now;
         return D(`Oda ${f1(room)} °C ≥ ${cfg.stop} °C: STOP`, {action:'stop'});

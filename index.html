@@ -4,93 +4,105 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b1223" />
-  <meta name="description" content="Karavan Webasto V3.9 DİZİ C START Komut Testi — RE5011 kontrollü manuel Bluetooth denemeleri." />
-  <title>Karavan Webasto V3.9 DİZİ C START</title>
+  <title>Karavan Webasto</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="style.css?v=3.9.0" />
-  <script type="module" src="app.js?v=3.9.0"></script>
+  <link rel="stylesheet" href="style.css?v=4.0.0" />
+  <script type="module" src="app.js?v=4.0.0"></script>
 </head>
 <body>
-  <main class="shell">
-    <header class="top">
-      <div class="brand-mark" aria-hidden="true">♨</div>
-      <div class="top-title"><h1>Karavan Webasto <span>V3.9 DİZİ C START</span></h1><p>Quatro · HeatGenie / RE5011</p></div>
-      <span id="connectionBadge" class="pill offline">Bağlı değil</span>
-    </header>
+<div id="toast" role="status" aria-live="polite" hidden></div>
 
-    <section class="notice" id="modeNotice" role="status">
-      <strong>Gerçek cihaza bağlı değil.</strong> Demo moduyla termostat mantığını deneyebilir veya Bluetooth tanılaması yapabilirsin.
-    </section>
+<main id="tab-home" class="tab">
+  <header class="top">
+    <span id="connState" class="pill">Bağlı değil</span>
+    <button id="nightBtn" class="icon" aria-label="Gece modu">☾</button>
+  </header>
 
-    <section class="panel" aria-label="Bağlantı">
-      <div class="section-heading"><h2>Bağlantı</h2><span id="deviceName">Cihaz seçilmedi</span></div>
-      <div class="actions">
-        <button id="connectBtn" class="btn primary">Bluetooth ile cihazı bul</button>
-        <button id="disconnectBtn" class="btn secondary" disabled>Bağlantıyı kes</button>
-        <button id="demoBtn" class="btn ghost">Demo aç</button>
-      </div>
-      <p class="help">iPhone’da Bluetooth için Bluefy; Windows/Android’de desteklenen Chrome/Edge sürümünü kullan. HeatGenie uygulamasını bağlantı sırasında kapat.</p>
-    </section>
+  <div id="banners"></div>
 
-    <section class="status-card" aria-label="Isıtıcı durumu">
-      <div class="status-icon" aria-hidden="true">♨</div>
-      <div><div class="eyebrow">ISITICI DURUMU</div><h2 id="heaterStatus">Bilinmiyor</h2><p id="heaterSubstatus">Cihaz verisi bekleniyor</p></div>
-    </section>
+  <section class="hero">
+    <div class="temp"><span id="roomTemp">--.-</span><span class="unit">°C</span></div>
+    <div class="label">Ortam sıcaklığı</div>
+    <div id="heaterState" class="state">Veri bekleniyor</div>
+    <div class="meta">
+      <span id="battery">Akü —</span>
+      <span id="lastStart">Son START: —</span>
+      <span id="lastStop">Son STOP: —</span>
+    </div>
+  </section>
 
-    <section class="metrics" aria-label="Ölçümler">
-      <div class="metric"><label>Ortam sıcaklığı</label><strong id="roomTemp">—</strong><small>°C</small></div>
-      <div class="metric"><label>Hedef sıcaklık</label><strong id="physicalTarget">—</strong><small>°C</small></div>
-      <div class="metric"><label>Kasa sıcaklığı</label><strong id="caseTemp">—</strong><small>°C</small></div>
-      <div class="metric"><label>Akü voltajı</label><strong id="voltage">—</strong><small>V</small></div>
-      <div class="metric"><label>Fan</label><strong id="fan">—</strong></div>
-      <div class="metric"><label>Pompa / kızdırma</label><strong id="pump">—</strong></div>
-    </section>
+  <section class="card settings">
+    <div class="row">
+      <span class="rowlabel">START sıcaklığı<small>bu değerde veya altında çalıştır</small></span>
+      <span class="stepper"><button id="startMinus" aria-label="START sıcaklığını azalt">−</button><output id="startVal">20</output><button id="startPlus" aria-label="START sıcaklığını artır">+</button></span>
+    </div>
+    <div class="row">
+      <span class="rowlabel">STOP sıcaklığı<small>bu değerde veya üstünde durdur</small></span>
+      <span class="stepper"><button id="stopMinus" aria-label="STOP sıcaklığını azalt">−</button><output id="stopVal">25</output><button id="stopPlus" aria-label="STOP sıcaklığını artır">+</button></span>
+    </div>
+    <label class="row auto">
+      <span class="rowlabel">Otomatik mod<small id="autoLine">Kapalı</small></span>
+      <input id="autoToggle" type="checkbox" role="switch" />
+    </label>
+  </section>
 
-    <section class="panel" aria-label="Gerçek cihaz için manuel komut testi">
-      <div class="section-heading"><h2>V3.9 • Gerçek komut testi</h2><span>Windows 11 / Chrome</span></div>
-      <p class="rule"><strong>V3.9 — Başarılı olduğu bildirilen Dizi C:</strong> START = <code>AA 00 61 01 [hedef °C] 00 CRC CRC</code>. Cihazın güncel hedef sıcaklığı (10–40°C) B4 alanına yazılır; CRC her seferinde yeniden hesaplanır. Örnek 22°C: <code>AA 00 61 01 16 00 D6 A9</code>. 0x41 yanıtı ve fiziksel çalışma geçişi kaydedilir. Çalışma MOD 0 değiştirilmez. STOP/CLEAR ve hedef +/− aynen korunur. TEST yalnızca gözetim, havalandırma ve CO alarmı altında yapılır.</p>
-      <label class="test-consent"><input type="checkbox" id="manualTestArm" disabled /> Cihazın yanında olduğumu ve Bluetooth komutları (otomatik START/STOP dahil) göndermek istediğimi onaylıyorum.</label>
-      <p class="help" id="manualTestStatus">Bluetooth bağlantısı kurulduğunda manuel test açılabilir.</p>
-      <p id="lastTestResult" class="help">Önce 22→23°C gibi bir hedef değişikliğiyle test et. START/STOP ancak hedef geri okuma testi geçilirse açılır.</p>
-    </section>
+  <section class="actions">
+    <button id="startBtn" class="act start">START</button>
+    <button id="stopBtn" class="act stop">STOP</button>
+  </section>
+  <p id="holdHint" class="hint" hidden>Gece modunda START/STOP için butona 1,5 sn basılı tut.</p>
+  <button id="connectBtn" class="wide">Bluetooth’a bağlan</button>
+  <button id="nightExit" class="wide" hidden>Gece modundan çık (basılı tut)</button>
+</main>
 
-    <section class="panel">
-      <div class="section-heading"><h2>Manuel kontrol</h2><span>START TEST / STOP → CLEAR</span></div>
-      <div class="actions pair"><button id="startBtn" class="btn start" disabled>▶ START (DİZİ C · HEDEF + TEK START)</button><button id="stopBtn" class="btn stop" disabled>■ STOP / CLEAR</button></div>
-      <div class="actions"><button id="restoreModeBtn" class="btn secondary" disabled>↩ Otomatik/Sıcaklık moduna dön (0)</button></div>
-      <p class="help">START yalnızca çalışma MOD 0 ve tamamen durmuş cihazda denenir. Cihaz hâlâ manuel mod (P-01) gösteriyorsa önce “mod 0” düğmesiyle geri dön. START hiçbir modu kendiliğinden değiştirmez. Tek deneme sonrası tanı kaydını indir.</p>
-      <div class="divider"></div>
-      <div class="section-heading"><h2>HeatGenie hedef sıcaklığı</h2><span>10–40 °C</span></div>
-      <div class="stepper"><button id="targetMinus" aria-label="Hedef sıcaklığı azalt" disabled>−</button><strong id="targetValue">25 °C</strong><button id="targetPlus" aria-label="Hedef sıcaklığı artır" disabled>+</button></div>
-      <p class="help">Gerçek test sırasında önce +/− ile bir derece değiştir; cihazın yeni hedef değerini bildirmesini bekle. Her komut için ayrıca onay istenir.</p>
-    </section>
+<section id="tab-history" class="tab" hidden>
+  <h2>Geçmiş</h2>
+  <div class="seg" id="range">
+    <button data-h="12" class="on">Son 12 saat</button>
+    <button data-h="24">Son 24 saat</button>
+    <button data-h="today">Bugün</button>
+  </div>
+  <div class="cards">
+    <div class="stat"><b id="sStarts">0</b><span>START</span></div>
+    <div class="stat"><b id="sStops">0</b><span>STOP</span></div>
+    <div class="stat"><b id="sRun">0 dk</b><span>Çalışma</span></div>
+    <div class="stat"><b id="sRange">—</b><span>Sıcaklık aralığı</span></div>
+  </div>
+  <div class="card chartbox"><svg id="chart" viewBox="0 0 600 220" role="img" aria-label="Ortam sıcaklığı grafiği"></svg></div>
+  <h3>Olaylar</h3>
+  <ul id="events" class="events"></ul>
+  <div class="row2">
+    <button id="exportBtn">CSV indir</button>
+    <button id="clearBtn" class="danger">Geçmişi sil</button>
+  </div>
+</section>
 
-    <section class="panel">
-      <div class="section-heading"><h2>Otomatik termostat</h2><label class="switch"><input id="autoToggle" type="checkbox" /><span class="knob"></span><span class="sr-only">Otomatik kontrol</span></label></div>
-      <p class="help space-top">Ortam START seviyesine indiğinde çalıştırır, STOP seviyesinde yeterince kalınca durdurur. Gerçek cihazda test için önce manuel test onay kutusunu işaretle. Chrome sekmesi ve bilgisayar açık kalmalı; bağlantı koparsa 10 dk boyunca otomatik yeniden bağlanılır.</p>
-      <div class="setting">
-        <div><strong>START sıcaklığı</strong><p>Bu değere düşünce açılır</p></div>
-        <div class="mini-stepper"><button id="startMinus" aria-label="START azalt">−</button><output id="startValue">20 °C</output><button id="startPlus" aria-label="START artır">+</button></div>
-      </div>
-      <div class="setting">
-        <div><strong>STOP sıcaklığı</strong><p>Bu değere çıkınca kapanır</p></div>
-        <div class="mini-stepper"><button id="stopMinus" aria-label="STOP azalt">−</button><output id="stopValue">25 °C</output><button id="stopPlus" aria-label="STOP artır">+</button></div>
-      </div>
-      <div class="setting"><div><strong>STOP gecikmesi</strong><p>Sıcaklığın eşikte kalma süresi</p></div><select id="stopDelay"><option value="10">10 sn</option><option value="20">20 sn</option><option value="30">30 sn</option><option value="60">60 sn</option></select></div>
-      <div class="setting"><div><strong>Yeniden başlatma beklemesi</strong><p>Kontrollü duruş sonrası</p></div><select id="restartDelay"><option value="120">120 sn</option><option value="180">180 sn</option><option value="300">300 sn</option><option value="600">600 sn</option></select></div>
-      <p class="rule">STOP değeri START değerinden en az <b>2 °C</b> yüksek olmalıdır. STOP ayarı değiştiğinde otomatik hedef de değişir.</p>
-      <p class="help" id="autoReason">Otomatik mod kapalı.</p>
-    </section>
+<section id="tab-details" class="tab" hidden>
+  <h2>Ayrıntılar</h2>
+  <div class="card">
+    <label class="row"><span class="rowlabel">Bildirimler<small>START/STOP sessiz, uyarılar sesli</small></span><input id="notifyToggle" type="checkbox" role="switch" /></label>
+    <label class="row"><span class="rowlabel">STOP gecikmesi</span>
+      <select id="selStopDelay"><option value="10">10 sn</option><option value="30">30 sn</option><option value="60">60 sn</option><option value="120">120 sn</option></select></label>
+    <label class="row"><span class="rowlabel">Minimum çalışma süresi</span>
+      <select id="selMinRun"><option value="300">5 dk</option><option value="600">10 dk</option><option value="900">15 dk</option><option value="1200">20 dk</option></select></label>
+    <label class="row"><span class="rowlabel">Minimum bekleme (STOP → START)</span>
+      <select id="selRestart"><option value="180">3 dk</option><option value="300">5 dk</option><option value="600">10 dk</option><option value="900">15 dk</option></select></label>
+  </div>
+  <div class="row2">
+    <button id="mode0Btn">Mod 0’a dön</button>
+    <button id="disconnectBtn" class="danger">Bağlantıyı kes</button>
+  </div>
+  <h3>Tanı kaydı</h3>
+  <pre id="log" class="log"></pre>
+  <div class="row2"><button id="logDownload">Kaydı indir</button><button id="logClear">Temizle</button></div>
+  <p class="version">V4.0 web · Akü uyarısı: çalışırken 11,0 V altı</p>
+</section>
 
-    <section class="panel">
-      <div class="section-heading"><h2>Güvenlik ve tanılama</h2><span id="freshness">Veri yok</span></div>
-      <div class="actions"><button class="btn amber" id="leaveBtn" disabled>Karavandan ayrıldım</button><button class="btn secondary" id="readBtn" disabled>Veri oku</button><button class="btn ghost" id="exportBtn">Tanı kayıtlarını indir</button></div>
-      <p class="help">Bu test sürümünde “Karavandan ayrıldım” gerçek cihazdayken devre dışıdır. Isıtıcı soğutması için orijinal kumandası kullanılabilir.</p>
-      <details><summary>Bluetooth tanılama kayıtları</summary><pre id="logOutput" class="logs">Henüz kayıt yok.</pre></details>
-      <details><summary>Teknik durum / V3.2 sınırları</summary><p class="help">Bluetooth GATT bağlantısı, servis keşfi ve gerçek 3A00 durum raporları için CRC16 doğrulamalı okuma bulunur. diesel-heater-ble 0.3.8 kaynak kodundan üretilen komutlar yalnızca kullanıcı açıkça manuel testi onaylarsa 3A01 kanalına yazılır. GATT teyidi cihazın komutu uyguladığını kanıtlamaz. Hedef değişimi 3A00 alanından kontrol edilir; START/STOP için durum değişimi izlenir. 0x41 kısa yanıtı için durum (0=başarılı,1=tekrar) ve START B4 alanının eşleşmesi incelenir. Mod 1 veya 2 START testi bu sürümde yapılmaz. Otomatik termostat gerçek cihazda manuel test onayı + ayrı açık onayla etkinleşir; hata, Mod≠0, Fahrenheit veya iki başarısız START durumunda kendini kapatır. STOP hiçbir koşula bağlı değildir. Demo gerçek ısıtıcıyı kumanda etmez. Amaç doğrulanmamış bir paketin ısıtıcıya gönderilmesini önlemektir.</p></details>
-    </section>
-    <footer>Karavan Webasto V3.9 DİZİ C START · Yerel kayıt · İnternet gerektirmeyen termostat mantığı (sayfa açıkken) · CO alarmının yerine geçmez.</footer>
-  </main>
+<nav class="tabs" id="tabs">
+  <button data-tab="home" class="on">Ana ekran</button>
+  <button data-tab="history">Geçmiş</button>
+  <button data-tab="details">Ayrıntılar</button>
+</nav>
 </body>
 </html>

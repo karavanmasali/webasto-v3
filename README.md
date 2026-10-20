@@ -1,22 +1,26 @@
-# Karavan Webasto V3.9 — OTOMATİK TERMOSTAT (gerçek cihaz testi)
+# Karavan Webasto V4.0 (web)
 
-V3.8 üzerine eklenenler:
-- **Gerçek cihazda otomatik START/STOP** (`auto-engine.mjs`). iOS uygulamasındaki motorla aynı mantık: oda ≥ STOP → (gecikme sonrası) STOP; oda ≤ START → START.
-- Yeniden başlatma beklemesi, saatlik START sınırı (4), etkisiz START'ta en çok 2 deneme, etkisiz STOP'ta 60 sn arayla 3 tekrar.
-- Otomatik mod kendini kapatır: hata bayrağı, Fahrenheit, iki başarısız START, yeniden bağlanma süresi aşımı.
-- **STOP artık hiçbir koşula bağlı değil**: hedef testi, hata bayrağı ve telemetri tazeliği STOP'u engellemez; doğrulama beklenirken de STOP gönderilebilir.
-- **Art arda START**: tek bağlantıda kilit yok (60 sn koruması var). 0x41 "TEKRAR KOMUT" yanıtı gelirse sonraki START'ta B4 ±1 kaydırılır (DOĞRULANMAMIŞ varsayım; kayıttaki `0x41 ACK` satırlarına bak).
-- **Otomatik yeniden bağlanma** (en çok 10 dk, kullanıcı hareketi gerekmez), telemetri 20 sn gelmezse salt-okunur durum isteği.
-- Bildirim (izin verilirse), ekran uyku kilidi (otomatik açıkken).
+Sade arayüz + kalıcı otomatik mod + çalışma geçmişi. Windows Chrome/Edge, HTTPS (GitHub Pages) gerekir.
 
-## Test (Windows / Chrome)
-1. Dosyaları GitHub Pages deposunun köküne yükle, `Ctrl+Shift+R` ile yenile; başlık `V3.9` olmalı.
-2. Bağlan → manuel test onay kutusu → hedef +/− ile bir derece değiştirip geri okumayı doğrula.
-3. Önce **manuel** START ve STOP'u dene (adım 5→1, soğutma).
-4. START/STOP eşiklerini odanın hemen üstüne/altına getirip **Otomatik termostat**'ı aç; kayıtta `OTOMATİK KARAR` satırlarını izle.
-5. START → STOP → START döngüsünde `0x41 ACK` durumuna bak (TEKRAR KOMUT çıkıyor mu?).
-6. Bluetooth'u (ısıtıcı kapsama alanı dışına çıkarak ya da kısa süre) kesip yeniden bağlanmayı dene.
-7. Tanı kaydını indirip paylaş.
+## Ekranlar
+- **Ana ekran:** ortam sıcaklığı, cihaz durumu, bağlantı durumu (Bağlı / Yeniden bağlanıyor / Bağlantı kesildi), akü, son START/STOP saati, START ve STOP sıcaklık ayarı, otomatik mod anahtarı, manuel START/STOP.
+- **Geçmiş:** START/STOP sayısı, toplam çalışma süresi, sıcaklık aralığı (son 12 saat / 24 saat / bugün), sıcaklık grafiği (çalışma aralıkları gölgeli), olay listesi (saat + kaynak: otomatik/manuel/cihaz), CSV dışa aktarma.
+- **Ayrıntılar:** bildirimler, STOP gecikmesi, minimum çalışma süresi, minimum bekleme, Mod 0’a dön, bağlantıyı kes, tanı kaydı.
+- **Gece modu (☾):** siyah/koyu kırmızı sade ekran; START/STOP için butona 1,5 sn basılı tutmak gerekir; çıkış da basılı tutarak.
 
-Sınırlar: tarayıcı sekmesi ve bilgisayar açık kalmalı; bilgisayar uykuya geçerse otomatik kontrol durur. Oda sıcaklığı ısıtıcının verdiği değerdir.
-CO alarmı, havalandırma ve cihaz başında gözetim olmadan otomatik mod kullanma.
+## Davranış
+- Otomatik mod tercihi tarayıcıda saklanır; sayfa yenilense de açık kalır. Yalnızca **manuel STOP** veya güvenlik nedeniyle (cihaz hatası, Fahrenheit, art arda 2 etkisiz START) kapanır; kapanınca ekranda söylenir. Manuel START otomatiği kapatmaz.
+- Bağlantı kopsa da tercih saklanır; ana ekranda kırmızı şeritle “Otomatik mod AÇIK ama kontrol çalışmıyor” yazar. 10 dk boyunca kendiliğinden yeniden bağlanmayı dener. Sayfa yenilenince daha önce izin verilen cihaza sessizce bağlanmayı dener (Chrome izin verirse), yoksa “Bluetooth’a bağlan” gerekir.
+- STOP sıcaklığını değiştirince (otomatik açıkken) Webasto’nun hedefi de güncellenir.
+- Oda STOP sıcaklığına ulaşsa bile **minimum çalışma süresi** (varsayılan 10 dk) dolmadan STOP gitmez. STOP sonrası soğutma bitmeden (fan/pompa/kızdırma kapanmadan) START gitmez; ayrıca **minimum bekleme** (varsayılan 3 dk) ve saatte en çok 4 START sınırı vardır.
+- **Akü:** her zaman gösterilir. Uyarı yalnızca ısıtıcı çalışırken (soğutma ve kapalıyken değil) 11,0 V altında 30 sn sürerse gelir (cihaz ~10,8 V’ta keser).
+- **Bildirimler** (tarayıcı izni gerekir): START/STOP sessiz, uyarılar (hata, bağlantı kopması, düşük akü, etkisiz komut) sesli. Ör. “02:15 — Ortam 20°C, Webasto çalıştırıldı.”
+- Geçmiş (olaylar + dakikada bir sıcaklık örneği, 7 gün) bu tarayıcıda, bu sitenin verisi olarak saklanır; site verisini silersen geçmiş de gider.
+
+## Sınırlar
+- Chrome sekmesi açık ve bilgisayar uyanık olmalı (otomatik açıkken ekran uyku kilidi alınır). Tarayıcı kapalıyken kontrol ve bildirim yoktur; bu iOS uygulamasının işi.
+- Isıtıcı aynı anda tek BLE bağlantısı kabul eder: HeatGenie uygulaması açıkken bu sayfa bağlanamaz.
+- Oda sıcaklığı ısıtıcının verdiği değerdir.
+
+## Yükleme
+Dosyaları GitHub Pages deposunun köküne yükle (eski `thermostat.mjs` ve `V3.2-KOMUT-DURUMU.md` dosyalarını silebilirsin), `Ctrl+Shift+R` ile yenile.
